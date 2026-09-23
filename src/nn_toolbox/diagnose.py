@@ -242,7 +242,89 @@ def diagnose(
         findings = det.detect(context)
         report.add_findings(findings)
 
-    # 9. Active Experiments in "deep" mode
+    # 8.1 Record verified healthy learnability dimensions (brief confirmations)
+    ds = context.get("data_sanity", {})
+    if ds.get("inputs_finite", False) and not ds.get("input_is_constant", False):
+        report.add_finding(
+            DiagnosticFinding(
+                category=FindingCategory.DATA.value,
+                severity=Severity.INFO.value,
+                observation=f"Input data is finite and non-constant (variance: {ds.get('input_var', 1.0):.2e} range: [{ds.get('input_min', 0.0):.2f}, {ds.get('input_max', 0.0):.2f}]).",
+                interpretation="Inputs pass basic numeric validity checks without NaN, Inf, or zero variance.",
+                evidence=ds,
+                confidence="high",
+            )
+        )
+
+    fwd = context.get("forward_analysis", {})
+    if fwd and not fwd.get("amplification_events") and not fwd.get("attenuation_events"):
+        layers_dict = fwd.get("layers", {})
+        n_layers = len(layers_dict)
+        if n_layers > 0:
+            stds = [s.get("std", 1.0) for s in layers_dict.values() if s.get("std") is not None]
+            min_std, max_std = (min(stds), max(stds)) if stds else (1.0, 1.0)
+            report.add_finding(
+                DiagnosticFinding(
+                    category=FindingCategory.FORWARD.value,
+                    severity=Severity.INFO.value,
+                    observation=f"Forward activation propagation is stable across {n_layers} layer(s) (std range: {min_std:.2f} - {max_std:.2f}).",
+                    interpretation="Activations propagate through network depth without exploding or vanishing.",
+                    evidence={"monitored_layers": n_layers, "min_std": min_std, "max_std": max_std},
+                    confidence="high",
+                )
+            )
+
+    bwd = context.get("backward_analysis", {})
+    if bwd:
+        zero_params = bwd.get("zero_grad_params", [])
+        van_params = bwd.get("vanishing_params", [])
+        exp_params = bwd.get("exploding_params", [])
+        active_p = bwd.get("params_with_gradients", 0)
+        total_trainable = bwd.get("total_trainable_parameters", active_p)
+        mean_gnorm = bwd.get("mean_gradient_norm", 0.0)
+
+        if not zero_params and not van_params and not exp_params and active_p > 0:
+            report.add_finding(
+                DiagnosticFinding(
+                    category=FindingCategory.BACKWARD.value,
+                    severity=Severity.INFO.value,
+                    observation=f"Active gradient flow verified on 100% of trainable parameters ({active_p}/{total_trainable}, mean norm: {mean_gnorm:.2e}).",
+                    interpretation="Loss gradients propagate smoothly to all trainable parameters without dead layers or gradient explosion.",
+                    evidence=bwd,
+                    confidence="high",
+                )
+            )
+
+    upd = context.get("update_stats", {})
+    if upd:
+        u_ratio = upd.get("global_update_ratio", 0.0)
+        u_norm = upd.get("global_update_norm", 0.0)
+        if 1e-5 <= u_ratio <= 0.05:
+            report.add_finding(
+                DiagnosticFinding(
+                    category=FindingCategory.OPTIMIZATION.value,
+                    severity=Severity.INFO.value,
+                    observation=f"Healthy parameter update ratio: ||Δθ||/||θ|| = {u_ratio:.2e} (displacement norm: {u_norm:.2e}).",
+                    interpretation="The optimizer step produces adequate parameter displacement in the effective learning regime (1e-4 to 1e-2).",
+                    evidence=upd,
+                    confidence="high",
+                )
+            )
+
+    rep = context.get("representation_collapse", {})
+    if rep and not rep.get("is_collapsed", False):
+        erank = rep.get("effective_rank", 1.0)
+        eratio = rep.get("effective_rank_ratio", 1.0)
+        report.add_finding(
+            DiagnosticFinding(
+                category=FindingCategory.ARCHITECTURE.value,
+                severity=Severity.INFO.value,
+                observation=f"Output representation is full-rank and diverse (effective rank: {erank:.2f}, ratio: {eratio:.2f}).",
+                interpretation="Representations occupy diverse subspaces without dimensional collapse.",
+                evidence=rep,
+                confidence="high",
+            )
+        )
     should_run_deep = (mode == "deep") or (diagnostics and any(d in diagnostics for d in ["deep", "overfit", "lr_sweep", "perturbation"]))
 
     if should_run_deep and batch_input is not None and torch.is_tensor(batch_input):

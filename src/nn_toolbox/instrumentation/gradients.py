@@ -41,11 +41,16 @@ class GradientMonitor:
         self._current_step: int = 0
         self._attached: bool = False
 
-    def attach(self) -> None:
-        """Attach backward hooks to model submodules."""
+    def attach(self, register_module_hooks: bool = False) -> None:
+        """Attach backward monitoring.
+
+        By default, relies on native parameter gradients collected post-backward to eliminate
+        fragile PyTorch BackwardHookFunction view+inplace autograd collisions.
+        """
         if self._attached:
             return
-        self.hook_manager.register_backward_hook(self._on_backward)
+        if register_module_hooks:
+            self.hook_manager.register_backward_hook(self._on_backward)
         self._attached = True
 
     def detach(self) -> None:

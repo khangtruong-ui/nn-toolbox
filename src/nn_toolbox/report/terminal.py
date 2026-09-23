@@ -17,6 +17,11 @@ def format_terminal_report(report: DiagnosticReport, verbose: bool = False) -> s
 
     lines.append(bar)
     lines.append(f" nn-toolbox diagnostic report: {report.model_name} (Mode: {report.mode.upper()})")
+    summary = report.summary()
+    healthy_cnt = summary.get("healthy_count", len(report.healthy_findings))
+    warn_cnt = summary.get("warning_count", len(report.warning_findings))
+    crit_cnt = summary.get("critical_count", len(report.critical_findings))
+    lines.append(f" Status: {healthy_cnt} verified healthy | {warn_cnt} warning(s) | {crit_cnt} critical")
     lines.append(bar)
 
     sections = [

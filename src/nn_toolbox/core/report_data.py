@@ -49,6 +49,11 @@ class DiagnosticReport:
         """Return findings with warning severity."""
         return [f for f in self.findings if f.severity in (Severity.WARNING.value, "warning")]
 
+    @property
+    def healthy_findings(self) -> List[DiagnosticFinding]:
+        """Return findings representing verified healthy or passing diagnostic checks."""
+        return [f for f in self.findings if not f.is_actionable()]
+
     def get_findings_by_category(self, category: str) -> List[DiagnosticFinding]:
         """Filter findings by category."""
         cat_lower = category.lower()
@@ -121,7 +126,8 @@ class DiagnosticReport:
             "total_findings": len(self.findings),
             "critical_count": len(self.critical_findings),
             "warning_count": len(self.warning_findings),
-            "info_count": len(self.findings) - len(self.actionable_findings),
+            "healthy_count": len(self.healthy_findings),
+            "info_count": len(self.healthy_findings),
             "investigation_targets_count": len(self.get_investigation_targets()),
         }
 
