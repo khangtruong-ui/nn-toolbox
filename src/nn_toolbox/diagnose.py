@@ -248,28 +248,40 @@ def diagnose(
     if should_run_deep and batch_input is not None and torch.is_tensor(batch_input):
         # 9a. Overfit Test
         if loss_fn is not None and (diagnostics is None or "overfit" in diagnostics):
-            sample_pool = {"x": batch_input, "y": batch_target}
-            of_res = overfit_test(model, sample_pool, loss_fn=loss_fn, sizes=[1, 8])
-            report.add_findings(of_res.get("findings", []))
-            report.metrics["overfit_test"] = of_res
+            try:
+                sample_pool = {"x": batch_input, "y": batch_target}
+                of_res = overfit_test(model, sample_pool, loss_fn=loss_fn, sizes=[1, 8])
+                report.add_findings(of_res.get("findings", []))
+                report.metrics["overfit_test"] = of_res
+            except Exception as e:
+                report.add_finding(DiagnosticFinding(category="memorization", severity="warning", observation=f"Overfit test failed to complete: {e}"))
 
         # 9b. Learning Rate Sweep
         if loss_fn is not None and (diagnostics is None or "lr_sweep" in diagnostics):
-            lr_res = lr_sweep(model, batch_input, batch_target, loss_fn=loss_fn)
-            report.add_findings(lr_res.get("findings", []))
-            report.metrics["lr_sweep"] = lr_res
+            try:
+                lr_res = lr_sweep(model, batch_input, batch_target, loss_fn=loss_fn)
+                report.add_findings(lr_res.get("findings", []))
+                report.metrics["lr_sweep"] = lr_res
+            except Exception as e:
+                report.add_finding(DiagnosticFinding(category="optimization", severity="warning", observation=f"LR sweep failed to complete: {e}"))
 
         # 9c. Initialization Diagnostic
         if diagnostics is None or "initialization" in diagnostics:
-            init_res = initialization_diagnostic(model, batch_input.shape)
-            report.add_findings(init_res.get("findings", []))
-            report.metrics["initialization"] = init_res
+            try:
+                init_res = initialization_diagnostic(model, batch_input.shape)
+                report.add_findings(init_res.get("findings", []))
+                report.metrics["initialization"] = init_res
+            except Exception as e:
+                report.add_finding(DiagnosticFinding(category="initialization", severity="warning", observation=f"Initialization diagnostic failed to complete: {e}"))
 
         # 9d. Perturbation Sensitivity Test
         if diagnostics is None or "perturbation" in diagnostics:
-            pert_res = perturbation_test(model, batch_input.to(device))
-            report.add_findings(pert_res.get("findings", []))
-            report.metrics["perturbation"] = pert_res
+            try:
+                pert_res = perturbation_test(model, batch_input.to(device))
+                report.add_findings(pert_res.get("findings", []))
+                report.metrics["perturbation"] = pert_res
+            except Exception as e:
+                report.add_finding(DiagnosticFinding(category="stability", severity="warning", observation=f"Perturbation test failed to complete: {e}"))
 
     # Restore training mode
     if not was_training:

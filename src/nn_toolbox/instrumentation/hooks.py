@@ -84,17 +84,24 @@ class HookManager:
     ) -> None:
         """Register a full backward hook callable(module_name, module, grad_inputs, grad_outputs)."""
         for name, module in self._target_modules.items():
+            # Skip modules without local parameters (e.g. activations, pooling, views)
+            # to avoid PyTorch BackwardHookFunction view+inplace runtime restrictions
+            if len(list(module.parameters(recurse=False))) == 0:
+                continue
+
             def _make_hook(m_name: str):
                 def _backward_hook(m: nn.Module, grad_in: Any, grad_out: Any):
                     hook_fn(m_name, m, grad_in, grad_out)
                 return _backward_hook
 
-            # Prefer register_full_backward_hook
-            if hasattr(module, "register_full_backward_hook"):
-                handle = module.register_full_backward_hook(_make_hook(name))
-            else:
-                handle = module.register_backward_hook(_make_hook(name))
-            self._backward_handles.append(handle)
+            try:
+                if hasattr(module, "register_full_backward_hook"):
+                    handle = module.register_full_backward_hook(_make_hook(name))
+                else:
+                    handle = module.register_backward_hook(_make_hook(name))
+                self._backward_handles.append(handle)
+            except Exception:
+                pass
 
     def remove_hooks(self) -> None:
         """Remove all attached hooks."""
