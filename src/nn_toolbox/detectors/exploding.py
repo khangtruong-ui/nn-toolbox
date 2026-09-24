@@ -88,7 +88,7 @@ class ExplodingDetector(BaseDetector):
             gnorm = exp["grad_norm"]
             ratio = exp.get("ratio_to_median", 1.0)
 
-            severity = Severity.CRITICAL.value if (gnorm > 1e4 or ratio > 50.0) else Severity.WARNING.value
+            severity = Severity.CRITICAL.value if (gnorm > 1e4 or (ratio > 50.0 and gnorm > 100.0)) else Severity.WARNING.value
             findings.append(
                 DiagnosticFinding(
                     category=FindingCategory.BACKWARD.value,

@@ -40,7 +40,18 @@ def lr_sweep(
     else:
         x = sample_input
 
-    y = sample_target.to(device) if (sample_target is not None and torch.is_tensor(sample_target)) else sample_target
+    def _to_device(t: Any) -> Any:
+        if t is None:
+            return None
+        if torch.is_tensor(t):
+            return t.to(device)
+        if isinstance(t, dict):
+            return {k: _to_device(v) for k, v in t.items()}
+        if isinstance(t, (tuple, list)):
+            return [_to_device(v) for v in t]
+        return t
+
+    y = _to_device(sample_target)
 
     sweep_results: List[Dict[str, Any]] = []
     findings: List[DiagnosticFinding] = []

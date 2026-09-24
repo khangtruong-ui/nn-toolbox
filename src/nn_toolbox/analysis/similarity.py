@@ -64,7 +64,7 @@ def compute_pairwise_cosine_similarity(features: torch.Tensor, eps: float = 1e-8
     with torch.no_grad():
         f = features.detach().float()
         if f.ndim > 2:
-            f = f.view(f.shape[0], -1)
+            f = f.reshape(f.shape[0], -1)
 
         norms = torch.linalg.norm(f, dim=1, keepdim=True).clamp_min(eps)
         normalized = f / norms
@@ -82,7 +82,7 @@ def compute_effective_rank(features: torch.Tensor, eps: float = 1e-12) -> Dict[s
     with torch.no_grad():
         f = features.detach().float()
         if f.ndim > 2:
-            f = f.view(f.shape[0], -1)
+            f = f.reshape(f.shape[0], -1)
 
         n, d = f.shape
         max_possible_rank = min(n, d)
@@ -139,7 +139,7 @@ def analyze_representation_collapse(features: torch.Tensor) -> Dict[str, Any]:
     with torch.no_grad():
         f = features.detach().float()
         if f.ndim > 2:
-            f = f.view(f.shape[0], -1)
+            f = f.reshape(f.shape[0], -1)
 
         n, d = f.shape
         if n < 2:

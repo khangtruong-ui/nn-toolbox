@@ -7,6 +7,7 @@ from nn_toolbox.core.report_data import DiagnosticReport
 from nn_toolbox.diagnose import diagnose
 from nn_toolbox.experiments import (
     ablation_test,
+    eval_determinism_test,
     gradient_check,
     initialization_diagnostic,
     label_shuffle_test,
@@ -38,6 +39,7 @@ __all__ = [
     "lr_sweep",
     "initialization_diagnostic",
     "train_eval_test",
+    "eval_determinism_test",
     "gradient_check",
     "perturbation_test",
     "ablation_test",

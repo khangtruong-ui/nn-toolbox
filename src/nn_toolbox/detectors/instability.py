@@ -75,7 +75,10 @@ class InstabilityDetector(BaseDetector):
         per_param_updates = update_info.get("updates", {})
         for name, up_entry in per_param_updates.items():
             u_ratio = up_entry.get("update_ratio", 0.0)
-            if u_ratio > 0.5:
+            p_norm = up_entry.get("param_norm", 0.0)
+            d_norm = up_entry.get("delta_norm", 0.0)
+            # Avoid false positives on zero-initialized biases or negligible parameter displacements
+            if u_ratio > 0.5 and (p_norm >= 0.05 or d_norm >= 0.05):
                 findings.append(
                     DiagnosticFinding(
                         category=FindingCategory.OPTIMIZATION.value,

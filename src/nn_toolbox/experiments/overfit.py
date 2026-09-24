@@ -38,6 +38,17 @@ def overfit_test(
     targets_pool = []
 
     # Handle dataset, dataloader, list, or batch dict/tuple
+    def _slice_target(t: Any, idx: int) -> Any:
+        if t is None:
+            return None
+        if torch.is_tensor(t):
+            return t[idx : idx + 1]
+        if isinstance(t, dict):
+            return {k: _slice_target(v, idx) for k, v in t.items()}
+        if isinstance(t, (tuple, list)):
+            return [_slice_target(v, idx) for v in t]
+        return t
+
     if isinstance(dataset_or_batch, dict):
         img = dataset_or_batch.get("image", dataset_or_batch.get("input", dataset_or_batch.get("x")))
         tgt = dataset_or_batch.get("mask", dataset_or_batch.get("label", dataset_or_batch.get("y", dataset_or_batch.get("target"))))
@@ -46,13 +57,13 @@ def overfit_test(
             for i in range(n_avail):
                 inputs_pool.append(img[i : i + 1])
                 if tgt is not None:
-                    targets_pool.append(tgt[i : i + 1])
+                    targets_pool.append(_slice_target(tgt, i))
     elif isinstance(dataset_or_batch, (tuple, list)) and len(dataset_or_batch) >= 2 and torch.is_tensor(dataset_or_batch[0]):
         x_all, y_all = dataset_or_batch[0], dataset_or_batch[1]
         n_avail = len(x_all)
         for i in range(n_avail):
             inputs_pool.append(x_all[i : i + 1])
-            targets_pool.append(y_all[i : i + 1])
+            targets_pool.append(_slice_target(y_all, i))
     elif hasattr(dataset_or_batch, "__iter__"):
         # Take up to max(sizes) samples from iterator/loader
         needed = max(sizes) if sizes else 32
@@ -64,12 +75,12 @@ def overfit_test(
                     for i in range(len(img)):
                         inputs_pool.append(img[i : i + 1])
                         if tgt is not None:
-                            targets_pool.append(tgt[i : i + 1])
+                            targets_pool.append(_slice_target(tgt, i))
             elif isinstance(batch, (tuple, list)) and len(batch) >= 2:
                 x_b, y_b = batch[0], batch[1]
                 for i in range(len(x_b)):
                     inputs_pool.append(x_b[i : i + 1])
-                    targets_pool.append(y_b[i : i + 1])
+                    targets_pool.append(_slice_target(y_b, i))
             if len(inputs_pool) >= needed:
                 break
 
@@ -87,6 +98,24 @@ def overfit_test(
     # Store initial state dict to reset cleanly
     orig_state = copy.deepcopy(model.state_dict())
 
+    def _collate_targets(pool_slice: List[Any], dev: torch.device) -> Any:
+        if not pool_slice or pool_slice[0] is None:
+            return None
+        first = pool_slice[0]
+        if torch.is_tensor(first):
+            return torch.cat(pool_slice, dim=0).to(dev)
+        if isinstance(first, dict):
+            return {
+                k: _collate_targets([t[k] for t in pool_slice if isinstance(t, dict) and k in t], dev)
+                for k in first
+            }
+        if isinstance(first, (tuple, list)):
+            return [
+                _collate_targets([t[idx] for t in pool_slice if isinstance(t, (tuple, list)) and len(t) > idx], dev)
+                for idx in range(len(first))
+            ]
+        return first
+
     try:
         for size in sizes:
             actual_size = min(size, len(inputs_pool))
@@ -94,7 +123,7 @@ def overfit_test(
                 continue
 
             sub_x = torch.cat(inputs_pool[:actual_size], dim=0).to(device)
-            sub_y = torch.cat(targets_pool[:actual_size], dim=0).to(device) if targets_pool else None
+            sub_y = _collate_targets(targets_pool[:actual_size], device) if targets_pool else None
 
             # Reset model parameters
             model.load_state_dict(orig_state)

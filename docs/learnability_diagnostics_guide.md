@@ -181,3 +181,78 @@ for p_name, res in chk["parameter_results"].items():
     print(f"{p_name}: relative error {res['relative_error']:.2e} -> {res['status']}")
 ```
 * If `relative_error > 1e-2`, the analytical backward method has a mathematical derivation bug or tensor indexing mismatch.
+
+---
+
+## 6. Pathology: Disconnected Submodules & Zero-Gradient Parameters
+
+### Diagnostic Checklist
+```text
+Zero-Gradient Parameters Symptom
+ ├── 1. Were submodules instantiated with requires_grad=True but unused in forward()?
+ ├── 2. Was an intermediate tensor detached (.detach(), .item(), or numpy)?
+ └── 3. Was an auxiliary loss weight set to 0.0 or omitted from total loss?
+```
+
+### Targeted Measurements
+```python
+from nn_toolbox.detectors.connectivity import GraphConnectivityDetector
+
+detector = GraphConnectivityDetector()
+findings = detector.detect(context)
+for f in findings:
+    print(f"Severity: {f.severity} | Module: {f.module} | Issue: {f.observation}")
+```
+* **Interpretation**:
+  - Parameters marked `requires_grad=True` with no backward loss connection waste memory and optimizer tracking.
+  - Grouping zero-gradient parameters hierarchically identifies dead subgraphs (e.g., `vae.decoder`) vs isolated dead neurons.
+
+---
+
+## 7. Pathology: Multi-Branch Gradient Starvation & Dominance
+
+### Diagnostic Checklist
+```text
+Branch Starvation Symptom
+ ├── 1. Do loss scales across composite terms differ by > 100x?
+ ├── 2. Does an auxiliary head or decoder receive attenuated gradients?
+ └── 3. Is the gradient RMS disparity across branches > 500x?
+```
+
+### Targeted Measurements
+```python
+from nn_toolbox.detectors.gradient_balance import GradientBalanceDetector
+
+detector = GradientBalanceDetector()
+findings = detector.detect(context)
+for f in findings:
+    print(f"Dominant branch: {f.evidence['dominant_branch']} vs Starved: {f.evidence['starved_branch']}")
+```
+* **Interpretation**:
+  - Scale-invariant RMS gradient comparison prevents parameter count bias ($\sqrt{N}$) when comparing conv layers against linear heads.
+  - Rebalance composite loss weights (e.g. `loss = loss_mask + 0.1 * loss_aux`) to restore gradient flow to starved branches.
+
+---
+
+## 8. Pathology: Non-Contiguous Memory Layouts & Stride Mismatches
+
+### Diagnostic Checklist
+```text
+Non-Contiguous Layout Symptom
+ ├── 1. Were tensors sliced along spatial or channel dimensions (e.g. [:, :, :H, :W])?
+ ├── 2. Were tensors permuted/transposed without .contiguous()?
+ └── 3. Did downstream code call .view(...) instead of .reshape(...)?
+```
+
+### Targeted Measurements
+```python
+from nn_toolbox.detectors.layout import TensorLayoutDetector
+
+detector = TensorLayoutDetector()
+findings = detector.detect(context)
+for f in findings:
+    print(f"Module: {f.module} | Layout: {f.evidence}")
+```
+* **Remediation**:
+  - Add `.contiguous()` immediately following spatial cropping or permutations.
+  - Replace rigid `.view(...)` calls with flexible `.reshape(...)` in analysis and library modules.

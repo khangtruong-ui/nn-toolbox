@@ -3,7 +3,7 @@
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python: 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://python.org)
 [![PyTorch: 2.0+](https://img.shields.io/badge/PyTorch-2.0%2B-ee4c2c.svg)](https://pytorch.org)
-[![Tests: Passing](https://img.shields.io/badge/Tests-30%2F30%20passing-brightgreen.svg)](tests/)
+[![Tests: Passing](https://img.shields.io/badge/Tests-35%2F35%20passing-brightgreen.svg)](tests/)
 
 An automated diagnostic and investigation framework for PyTorch neural network training.
 
@@ -37,6 +37,9 @@ When layers, signal pathways, or optimization dynamics are functioning normally,
   - [4. Representation Collapse & Effective Subspace Rank](#4-representation-collapse--effective-subspace-rank)
   - [5. Local Lipschitz Sensitivity](#5-local-lipschitz-sensitivity)
   - [6. Numerical Gradient Verification](#6-numerical-gradient-verification)
+  - [7. Inter-Branch Gradient Scale Balance](#7-inter-branch-gradient-scale-balance)
+  - [8. Graph Connectivity & Disconnected Subgraph Analysis](#8-graph-connectivity--disconnected-subgraph-analysis)
+  - [9. Evaluation Mode Determinism & Stochastic Drift](#9-evaluation-mode-determinism--stochastic-drift)
 - [Package Architecture](#package-architecture)
 - [Installation](#installation)
 - [Quickstart: Programmatic Usage](#quickstart-programmatic-usage)
@@ -63,16 +66,22 @@ When layers, signal pathways, or optimization dynamics are functioning normally,
   * Layer-relative signal propagation tracking ($std_l / std_{l-1}$).
   * True parameter update tracking ($\|\Delta \theta\| / \|\theta\|$).
   * Gradient reachability, norm progression, and step cosine similarity.
+  * Tensor memory layout and contiguity analysis (detects non-contiguous slices and stride mismatches).
+  * Inter-branch gradient balance tracking across architectural components.
 * **Targeted Experiments**:
   * **Automated Memorization / Overfitting Test**: Probes model and optimization capacity on $N \in \{1, 2, 8, 32\}$ samples.
   * **Logarithmic Learning Rate Sweep**: Evaluates training dynamics from $10^{-6}$ to $10^{-1}$ to identify optimal, stagnant, oscillatory, and divergent regimes.
   * **Initialization Diagnostic**: Isolates architecture-level signal flow from dataset confounders using synthetic $x \sim \mathcal{N}(0, 1)$.
   * **Train/Eval Consistency Diagnostic**: Compares mode-dependent forward behavior to detect running-statistics shifts or unseeded stochastic operations.
+  * **Evaluation Mode Determinism Test**: Verifies exact bitwise and relative output reproducibility across repeated evaluation passes.
   * **Numerical Gradient Checking**: Finite-difference verification for custom autograd functions and loss formulations.
   * **Perturbation / Local Lipschitz Sensitivity**: Probes directional feature sensitivity $\|\Delta y\| / \|\Delta x\|$.
   * **Representation Collapse Analysis**: Computes effective rank via SVD entropy to detect subspace collapse.
   * **Label Shuffle Sanity**: Tests optimization against randomized targets to establish data signal-to-noise bounds.
-* **Architecture-Aware Analyzers**:
+* **Architecture-Aware Analyzers & Graph Detectors**:
+  * **Graph Connectivity Detector**: Identifies and clusters trainable parameters structurally disconnected from loss backward pass.
+  * **Gradient Balance Detector**: Pinpoints branch dominance and gradient starvation in multi-head and composite networks.
+  * **Tensor Layout Detector**: Flags non-contiguous intermediate slices that trigger `.view()` crashes.
   * **CNN Analyzer**: Detects premature spatial downsampling, bottleneck collapse, and channel redundancy.
   * **Transformer Analyzer**: Measures multi-head attention entropy, attention collapse, and token sinks.
 * **Multi-Format Reporting**:
@@ -180,6 +189,48 @@ $$E_{rel} = \frac{\|\nabla_{auto} - \nabla_{num}\|_2}{\|\nabla_{auto}\|_2 + \|\n
 
 ---
 
+### 7. Inter-Branch Gradient Scale Balance
+
+In multi-branch architectures (e.g., latent diffusion models with parallel encoders/decoders or multi-task networks with auxiliary classifier heads), gradient magnitudes across branches can diverge by several orders of magnitude. 
+
+Comparing raw L2 parameter norms across different layers is flawed because L2 norm naturally scales with $\sqrt{N}$ (a 560,000-parameter convolution filter has an L2 norm $\sim 130\times$ larger than a 32-element bias even with identical per-element gradient distributions). `nn-toolbox` computes the scale-invariant Root-Mean-Square (RMS) gradient per parameter and aggregates medians across architectural branches:
+
+$$RMS(\nabla_{\theta_b}) = \sqrt{\frac{1}{N_b} \sum_{i=1}^{N_b} (\nabla_{\theta_{b,i}})^2}$$
+
+The inter-branch disparity ratio is evaluated:
+
+$$\mathcal{D} = \frac{\max_{b} \text{median}(RMS(\nabla_{\theta_b}))}{\min_{b} \text{median}(RMS(\nabla_{\theta_b}))}$$
+
+* $\mathcal{D} < 50$: **Balanced**: Gradients distribute smoothly across sub-networks.
+* $50 \le \mathcal{D} \le 500$: **Mild Disparity**: Normal in specialized projection layers or sparse attention blocks.
+* $\mathcal{D} > 500$: **Severe Starvation / Dominance**: The dominant branch monopolizes learning while the starved branch receives near-zero effective updates. Indicates unbalanced multi-task loss weighting or severe gradient attenuation.
+
+---
+
+### 8. Graph Connectivity & Disconnected Subgraph Analysis
+
+Parameters marked `requires_grad=True` that receive zero gradients across consecutive optimization steps waste GPU memory, allocate unused optimizer states (Adam first/second moments), and frequently indicate hidden computational graph detachments:
+1. Submodules instantiated as trainable but omitted from `model.forward()`.
+2. Intermediate tensors detached from autograd via `.detach()`, `.item()`, or conversions to NumPy/Python scalars.
+3. Auxiliary loss components whose loss weight is zero or whose outputs are omitted from the objective.
+
+`GraphConnectivityDetector` aggregates zero-gradient parameters by submodule prefix (e.g., `vae.decoder`), identifying whether an entire computational branch is dead rather than just individual un-activated biases.
+
+---
+
+### 9. Evaluation Mode Determinism & Stochastic Drift
+
+Inference pipelines, validation loops, and diagnostic benchmarks depend on deterministic, reproducible execution. Uncontrolled stochasticity during `eval()`—such as unseeded Gaussian noise injection, active dropout, or running statistics mutation—creates metric jitter, noisy validation curves, and nondeterministic inference bugs.
+
+`eval_determinism_test` executes multiple repeated forward passes on identical batches under `model.eval()`, measuring the maximum absolute difference and relative stochastic drift:
+
+$$\Delta_{rel} = \frac{\max_{k > 1} \|f_k(x) - f_1(x)\|_2}{\|f_1(x)\|_2 + \epsilon}$$
+
+* $\Delta_{rel} < 10^{-4}$: **Deterministic**: Identical, bitwise-consistent evaluation outputs.
+* $\Delta_{rel} \ge 10^{-4}$: **Non-Deterministic**: Flagged with diagnostic findings identifying stochastic layers or non-seeded random perturbations.
+
+---
+
 ## Package Architecture
 
 ```text
@@ -203,7 +254,8 @@ nn-toolbox/
 │   │   ├── overfit.py             # Automated tiny-dataset memorization test
 │   │   ├── lr_sweep.py            # Logarithmic learning rate sensitivity sweep
 │   │   ├── initialization.py      # Synthetic normal forward/backward probe
-│   │   ├── train_eval.py          # Train vs Eval consistency & determinism test
+│   │   ├── train_eval.py          # Train vs Eval consistency test
+│   │   ├── eval_determinism.py    # Evaluation mode determinism & drift diagnostic
 │   │   ├── gradient_check.py      # Finite-difference autograd numerical check
 │   │   ├── perturbation.py        # Local Lipschitz sensitivity probe
 │   │   ├── ablation.py            # Zeroing & layer importance ablation
@@ -211,6 +263,9 @@ nn-toolbox/
 │   │
 │   ├── detectors/                 # Rule-based failure hypothesis detectors
 │   │   ├── base.py                # BaseDetector interface
+│   │   ├── connectivity.py        # Disconnected subgraphs & unhooked parameters
+│   │   ├── gradient_balance.py    # Inter-branch gradient scale balance & starvation
+│   │   ├── layout.py              # Non-contiguous tensor memory layout & slicing
 │   │   ├── exploding.py           # Exploding activations & gradients detector
 │   │   ├── vanishing.py           # Vanishing signals & dead gradients detector
 │   │   ├── saturation.py          # Activation saturation detector (zero/max fraction)
@@ -234,7 +289,13 @@ nn-toolbox/
 │       ├── json.py                # Structured JSON serializer
 │       └── html.py                # Standalone responsive HTML generator
 │
-├── tests/                         # Comprehensive unit & pathology test suite
+├── tests/                         # Comprehensive unit & pathology test suite (35 tests)
+│   ├── test_architectures_and_pathologies.py
+│   ├── test_detectors.py
+│   ├── test_experiments.py
+│   ├── test_instrumentation.py
+│   ├── test_reporting.py
+│   └── test_new_learnability_suites.py
 ├── examples/                      # 7 runnable debugging recipe scripts
 └── docs/                          # In-depth technical guides
 ```
@@ -353,7 +414,8 @@ print(f"Train/eval relative difference: {te_results['relative_difference']:.2%}"
 | **Tiny-Batch Memorization** | `overfit_test(...)` | Distinguishes optimization/gradient failure from model capacity constraints. |
 | **Learning Rate Sweep** | `lr_sweep(...)` | Characterizes LR response regimes: stagnation, progress, oscillation, divergence. |
 | **Initialization Probe** | `initialization_diagnostic(...)` | Evaluates pure architectural signal scaling under $x \sim \mathcal{N}(0, 1)$. |
-| **Train/Eval Consistency** | `train_eval_test(...)` | Detects improper BatchNorm running statistics or unseeded eval stochasticity. |
+| **Train/Eval Consistency** | `train_eval_test(...)` | Detects improper BatchNorm running statistics or mode discrepancies. |
+| **Eval Determinism Test** | `eval_determinism_test(...)` | Detects uncontrolled stochasticity, unseeded noise, or non-deterministic layers in `eval()`. |
 | **Numerical Gradient Check** | `gradient_check(...)` | Finite-difference autograd check for custom autograd functions. |
 | **Perturbation Sensitivity** | `perturbation_test(...)` | Measures empirical Lipschitz gain $\|f(x+\epsilon) - f(x)\| / \|\epsilon\|$. |
 | **Layer Ablation Test** | `ablation_test(...)` | Evaluates layer importance and zeroing sensitivity. |
@@ -365,8 +427,11 @@ print(f"Train/eval relative difference: {te_results['relative_difference']:.2%}"
 
 | Detector | Category | Signals & Anomalies Detected |
 |---|---|---|
-| `ExplodingDetector` | Forward / Backward | Activation variance explosion ($>20\times$), gradient norms exceeding $10^4$. |
-| `VanishingDetector` | Forward / Backward | Activation scale collapse ($<0.05\times$), vanishing gradients ($<10^{-8}$), zero-gradient parameters. |
+| `GraphConnectivityDetector` | Architecture | Trainable submodules or clusters of parameters disconnected from backward loss computation (0 gradients). |
+| `GradientBalanceDetector` | Backward | Inter-branch gradient scale imbalance and layer starvation/dominance across architectural components ($>500\times$ RMS disparity). |
+| `TensorLayoutDetector` | Architecture | Non-contiguous intermediate/output tensor layouts and stride mismatches from slicing/permutations that cause `.view()` failures. |
+| `ExplodingDetector` | Forward / Backward | Activation variance explosion ($>20\times$), gradient norms exceeding $10^4$ or per-layer gradient explosion. |
+| `VanishingDetector` | Forward / Backward | Activation scale collapse ($<0.05\times$), vanishing gradients ($<10^{-8}$), unhooked parameters. |
 | `OptimizationDetector` | Optimization | Stagnant updates ($u(\theta) = 0$), tiny update ratios ($u(\theta) < 10^{-6}$), all parameters frozen. |
 | `SaturationDetector` | Activation | Extreme zero fractions ($>95\%$ dead ReLUs) or saturated sigmoid/tanh activations ($>95\%$). |
 | `CollapseDetector` | Architecture | Representation dimensional collapse via SVD effective rank ratio ($R_{eff} < 0.1$). |

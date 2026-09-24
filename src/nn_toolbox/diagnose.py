@@ -20,11 +20,15 @@ from nn_toolbox.detectors import (
     CollapseDetector,
     DataDetector,
     ExplodingDetector,
+    GradientBalanceDetector,
+    GraphConnectivityDetector,
     InstabilityDetector,
     OptimizationDetector,
     SaturationDetector,
+    TensorLayoutDetector,
     VanishingDetector,
 )
+from nn_toolbox.experiments.eval_determinism import eval_determinism_test
 from nn_toolbox.experiments.initialization import initialization_diagnostic
 from nn_toolbox.experiments.lr_sweep import lr_sweep
 from nn_toolbox.experiments.overfit import overfit_test
@@ -90,7 +94,10 @@ def diagnose(
             for b in dataloader:
                 if isinstance(b, dict):
                     img = b.get("image", b.get("input", b.get("x")))
-                    tgt = b.get("mask", b.get("label", b.get("y", b.get("target"))))
+                    if "mask" in b and "label" in b:
+                        tgt = {"mask": b["mask"], "label": b["label"]}
+                    else:
+                        tgt = b.get("mask", b.get("label", b.get("y", b.get("target"))))
                     if img is not None:
                         batch_input = img
                         batch_target = tgt
@@ -158,7 +165,17 @@ def diagnose(
 
     if batch_input is not None and torch.is_tensor(batch_input):
         x = batch_input.to(device)
-        y = batch_target.to(device) if (batch_target is not None and torch.is_tensor(batch_target)) else batch_target
+        if batch_target is not None:
+            if torch.is_tensor(batch_target):
+                y = batch_target.to(device)
+            elif isinstance(batch_target, dict):
+                y = {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch_target.items()}
+            elif isinstance(batch_target, (tuple, list)):
+                y = [v.to(device) if torch.is_tensor(v) else v for v in batch_target]
+            else:
+                y = batch_target
+        else:
+            y = None
 
         try:
             with act_monitor, grad_monitor:
@@ -190,7 +207,9 @@ def diagnose(
 
                     # Backward stats
                     bwd_analysis = grad_monitor.analyze_backward_propagation()
+                    param_grads = grad_monitor.collect_parameter_gradients()
                     context["backward_analysis"] = bwd_analysis
+                    context["parameter_gradient_stats"] = param_grads
                     report.metrics["backward_analysis"] = bwd_analysis
 
                     # If optimizer provided, evaluate update-to-weight ratio non-destructively
@@ -213,19 +232,37 @@ def diagnose(
                 )
             )
 
-    # 6. Representation Collapse Check
+    # 6. Representation Collapse & Tensor Layout Check
+    non_contiguous = []
     if latest_output is not None:
+        out_tensors = [latest_output] if torch.is_tensor(latest_output) else (
+            list(latest_output) if isinstance(latest_output, (tuple, list)) else []
+        )
+        for idx, ot in enumerate(out_tensors):
+            if torch.is_tensor(ot) and not ot.is_contiguous():
+                non_contiguous.append({
+                    "name": f"output_{idx}" if len(out_tensors) > 1 else "output",
+                    "shape": list(ot.shape),
+                    "stride": list(ot.stride()),
+                })
+        context["tensor_layout"] = {"non_contiguous": non_contiguous}
+        report.metrics["tensor_layout"] = context["tensor_layout"]
+
         out_tensor = latest_output[0] if isinstance(latest_output, (tuple, list)) else latest_output
         if torch.is_tensor(out_tensor) and out_tensor.ndim >= 2:
             rep_analysis = analyze_representation_collapse(out_tensor)
             context["representation_collapse"] = rep_analysis
             report.metrics["representation_collapse"] = rep_analysis
 
-    # 7. Train/Eval Consistency
+    # 7. Train/Eval Consistency & Determinism
     if batch_input is not None and torch.is_tensor(batch_input):
         te_res = train_eval_test(model, batch_input.to(device))
         report.add_findings(te_res.get("findings", []))
         report.metrics["train_eval"] = te_res
+
+        det_res = eval_determinism_test(model, batch_input.to(device), num_passes=2)
+        report.add_findings(det_res.get("findings", []))
+        report.metrics["eval_determinism"] = det_res
 
     # 8. Run Detectors on collected context
     detectors = [
@@ -236,6 +273,9 @@ def diagnose(
         CollapseDetector(),
         InstabilityDetector(),
         OptimizationDetector(),
+        GraphConnectivityDetector(),
+        GradientBalanceDetector(),
+        TensorLayoutDetector(),
     ]
 
     for det in detectors:
@@ -325,6 +365,19 @@ def diagnose(
                 confidence="high",
             )
         )
+
+    layout = context.get("tensor_layout", {})
+    if "non_contiguous" in layout and len(layout["non_contiguous"]) == 0:
+        report.add_finding(
+            DiagnosticFinding(
+                category=FindingCategory.ARCHITECTURE.value,
+                severity=Severity.INFO.value,
+                observation="Tensor memory layout is contiguous across model outputs.",
+                interpretation="Outputs exhibit contiguous striding without unaligned slicing artifacts.",
+                confidence="high",
+            )
+        )
+
     should_run_deep = (mode == "deep") or (diagnostics and any(d in diagnostics for d in ["deep", "overfit", "lr_sweep", "perturbation"]))
 
     if should_run_deep and batch_input is not None and torch.is_tensor(batch_input):
@@ -364,6 +417,15 @@ def diagnose(
                 report.metrics["perturbation"] = pert_res
             except Exception as e:
                 report.add_finding(DiagnosticFinding(category="stability", severity="warning", observation=f"Perturbation test failed to complete: {e}"))
+
+        # 9e. Evaluation Mode Determinism & Stochastic Drift
+        if diagnostics is None or "eval_determinism" in diagnostics or "determinism" in diagnostics:
+            try:
+                det_res = eval_determinism_test(model, batch_input.to(device), num_passes=4)
+                report.add_findings(det_res.get("findings", []))
+                report.metrics["eval_determinism"] = det_res
+            except Exception as e:
+                report.add_finding(DiagnosticFinding(category="stability", severity="warning", observation=f"Evaluation determinism test failed to complete: {e}"))
 
     # Restore training mode
     if not was_training:

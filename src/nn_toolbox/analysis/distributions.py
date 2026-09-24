@@ -115,7 +115,7 @@ def detect_dead_features(
         # Flatten spatial dimensions: (N, C, *) -> (N, C, -1) -> max over spatial -> (N, C)
         n = t.shape[0]
         c = t.shape[1]
-        reshaped = t.view(n, c, -1)
+        reshaped = t.reshape(n, c, -1)
 
         # Max absolute value per feature across the batch
         max_abs = reshaped.abs().amax(dim=(0, 2))  # shape: (C,)
