@@ -6,6 +6,7 @@ Tests for new learnability and stability suites:
 - eval_determinism_test
 """
 
+import copy
 import pytest
 import torch
 import torch.nn as nn
@@ -173,3 +174,55 @@ def test_diagnose_integration_with_new_features():
     # Check that eval determinism metric was recorded
     assert "eval_determinism" in report.metrics
     assert report.metrics["eval_determinism"]["is_deterministic"] is True
+
+
+def test_diagnose_non_destructive_guarantee():
+    class TestNet(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fc1 = nn.Linear(4, 8)
+            self.bn = nn.BatchNorm1d(8)
+            self.fc2 = nn.Linear(8, 2)
+
+        def forward(self, x):
+            return self.fc2(self.bn(self.fc1(x)))
+
+    model = TestNet()
+    # Populate batchnorm with known stats
+    init_x = torch.randn(10, 4)
+    model.train()
+    _ = model(init_x)
+
+    # Save exact snapshots
+    saved_weights = {k: v.clone() for k, v in model.state_dict().items()}
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-2)
+    saved_opt_state = copy.deepcopy(optimizer.state_dict())
+
+    x = torch.randn(8, 4)
+    y = torch.randn(8, 2)
+    loader = DataLoader(TensorDataset(x, y), batch_size=4)
+
+    # Run in deep mode with all active experiments
+    report = diagnose(
+        model=model,
+        dataloader=loader,
+        loss_fn=nn.MSELoss(),
+        optimizer=optimizer,
+        mode="deep",
+        verbose=False,
+    )
+
+    # Verify model mode preserved
+    assert model.training is True
+
+    # Verify every weight and buffer is bitwise identical
+    current_weights = model.state_dict()
+    for k, v in saved_weights.items():
+        assert torch.equal(v, current_weights[k]), f"Parameter/buffer {k} was mutated by diagnose()!"
+
+    # Verify optimizer state is bitwise identical
+    assert optimizer.state_dict() == saved_opt_state, "Optimizer state was mutated by diagnose()!"
+
+    # Verify gradients are cleared
+    for p in model.parameters():
+        assert p.grad is None or (p.grad == 0).all()

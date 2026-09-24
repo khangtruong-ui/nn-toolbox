@@ -22,7 +22,7 @@ def lr_sweep(
     loss_fn: Callable[[Any, Any], torch.Tensor],
     optimizer_factory: Optional[Callable[[Any, float], torch.optim.Optimizer]] = None,
     lr_range: Optional[List[float]] = None,
-    steps_per_lr: int = 15,
+    steps_per_lr: int = 8,
     device: Optional[Union[str, torch.device]] = None,
 ) -> Dict[str, Any]:
     """Test response of model across a range of learning rates on a fixed sample batch."""

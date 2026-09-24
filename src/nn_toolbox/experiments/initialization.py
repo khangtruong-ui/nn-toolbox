@@ -36,6 +36,7 @@ def initialization_diagnostic(
     act_monitor = ActivationMonitor(model)
     grad_monitor = GradientMonitor(model)
 
+    orig_state = copy.deepcopy(model.state_dict())
     was_training = model.training
     model.train()
 
@@ -158,6 +159,9 @@ def initialization_diagnostic(
     finally:
         act_monitor.detach()
         grad_monitor.detach()
-        model.zero_grad()
+        model.load_state_dict(orig_state)
+        model.zero_grad(set_to_none=True)
         if not was_training:
             model.eval()
+        else:
+            model.train()

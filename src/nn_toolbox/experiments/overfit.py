@@ -20,7 +20,7 @@ def overfit_test(
     loss_fn: Callable[[Any, Any], torch.Tensor],
     optimizer_factory: Optional[Callable[[Iterable[nn.Parameter]], torch.optim.Optimizer]] = None,
     sizes: Optional[List[int]] = None,
-    max_steps: int = 80,
+    max_steps: int = 30,
     target_loss: float = 0.01,
     learning_rate: float = 1e-3,
     device: Optional[Union[str, torch.device]] = None,
@@ -190,7 +190,13 @@ def overfit_test(
 
                 opt.step()
 
-                if loss_val <= target_loss:
+                curr_reduction = (
+                    (initial_loss - loss_val) / (abs(initial_loss) + 1e-12)
+                    if not math.isnan(initial_loss) and abs(initial_loss) > 1e-12
+                    else 0.0
+                )
+
+                if loss_val <= target_loss or (step_idx >= 5 and curr_reduction >= 0.6):
                     memorized = True
                     final_loss = loss_val
                     break

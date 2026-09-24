@@ -73,6 +73,48 @@ def diagnose(
     model_name = getattr(model, "__class__", type(model)).__name__
     report = DiagnosticReport(model_name=model_name, mode=mode)
 
+    # Guarantee non-destructive diagnostics: snapshot initial state
+    was_orig_training = model.training
+    orig_model_state = copy.deepcopy(model.state_dict())
+    orig_opt_state = copy.deepcopy(optimizer.state_dict()) if optimizer is not None else None
+
+    try:
+        return _diagnose_core(
+            model=model,
+            dataloader=dataloader,
+            loss_fn=loss_fn,
+            optimizer=optimizer,
+            mode=mode,
+            diagnostics=diagnostics,
+            device=device,
+            num_batches=num_batches,
+            sample_input=sample_input,
+            sample_target=sample_target,
+            verbose=verbose,
+            report=report,
+        )
+    finally:
+        model.load_state_dict(orig_model_state)
+        if optimizer is not None and orig_opt_state is not None:
+            optimizer.load_state_dict(orig_opt_state)
+        model.zero_grad(set_to_none=True)
+        model.train(was_orig_training)
+
+
+def _diagnose_core(
+    model: nn.Module,
+    dataloader: Optional[Iterable[Any]],
+    loss_fn: Optional[Callable[..., torch.Tensor]],
+    optimizer: Optional[torch.optim.Optimizer],
+    mode: str,
+    diagnostics: Optional[List[str]],
+    device: Optional[Union[str, torch.device]],
+    num_batches: int,
+    sample_input: Optional[Any],
+    sample_target: Optional[Any],
+    verbose: bool,
+    report: DiagnosticReport,
+) -> DiagnosticReport:
     # 1. Device resolution
     if device is None:
         try:
@@ -385,7 +427,7 @@ def diagnose(
         if loss_fn is not None and (diagnostics is None or "overfit" in diagnostics):
             try:
                 sample_pool = {"x": batch_input, "y": batch_target}
-                of_res = overfit_test(model, sample_pool, loss_fn=loss_fn, sizes=[1, 8])
+                of_res = overfit_test(model, sample_pool, loss_fn=loss_fn, sizes=[1, 4], max_steps=30)
                 report.add_findings(of_res.get("findings", []))
                 report.metrics["overfit_test"] = of_res
             except Exception as e:
@@ -394,7 +436,7 @@ def diagnose(
         # 9b. Learning Rate Sweep
         if loss_fn is not None and (diagnostics is None or "lr_sweep" in diagnostics):
             try:
-                lr_res = lr_sweep(model, batch_input, batch_target, loss_fn=loss_fn)
+                lr_res = lr_sweep(model, batch_input, batch_target, loss_fn=loss_fn, steps_per_lr=8)
                 report.add_findings(lr_res.get("findings", []))
                 report.metrics["lr_sweep"] = lr_res
             except Exception as e:
