@@ -403,7 +403,7 @@ def diagnose(
         # 9c. Initialization Diagnostic
         if diagnostics is None or "initialization" in diagnostics:
             try:
-                init_res = initialization_diagnostic(model, batch_input.shape)
+                init_res = initialization_diagnostic(model, batch_input.shape, loss_fn=loss_fn, device=device)
                 report.add_findings(init_res.get("findings", []))
                 report.metrics["initialization"] = init_res
             except Exception as e:

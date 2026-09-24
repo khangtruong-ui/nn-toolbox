@@ -62,7 +62,7 @@ def initialization_diagnostic(
         if loss_fn is not None:
             loss = loss_fn(out_tensor)
         else:
-            loss = out_tensor.float().sum()
+            loss = out_tensor.float().mean()
 
         loss.backward()
         bwd_analysis = grad_monitor.analyze_backward_propagation()

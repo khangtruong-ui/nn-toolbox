@@ -26,32 +26,65 @@ class ExplodingDetector(BaseDetector):
         # 1. Forward activation explosion checks
         fwd_analysis = context.get("forward_analysis", {})
         amp_events = fwd_analysis.get("amplification_events", [])
+        param_details = context.get("parameter_info", {}).get("param_details", {})
+
+        trainable_prefixes = set()
+        if param_details:
+            for p_name, p_info in param_details.items():
+                if p_info.get("requires_grad", False):
+                    parts = p_name.split(".")
+                    for i in range(1, len(parts) + 1):
+                        trainable_prefixes.add(".".join(parts[:i]))
+
         for event in amp_events:
             mod_name = event["module"]
             ratio = event["ratio_to_prev"]
             ratio_med = event["ratio_to_median"]
             std_val = event["std"]
 
-            severity = Severity.CRITICAL.value if (ratio > 20.0 or std_val > 1e4) else Severity.WARNING.value
+            is_frozen = False
+            if param_details:
+                mod_parts = mod_name.split(".")
+                is_frozen = not any(".".join(mod_parts[:i]) in trainable_prefixes for i in range(1, len(mod_parts) + 1))
+
+            if is_frozen:
+                severity = Severity.WARNING.value if ratio > 20.0 else Severity.INFO.value
+                obs = f"Module '{mod_name}' [FROZEN] has activation std {ratio:.1f}× larger than the previous layer (std: {std_val:.2f}, {ratio_med:.1f}× median)."
+                hypotheses = [
+                    "Structural feature scaling within frozen pretrained foundation backbone",
+                    "Input range mismatch for frozen backbone (e.g. unnormalized input tensor)",
+                ]
+                suggested_actions = [
+                    "Verify input tensor normalization matches pretrained backbone expectations.",
+                ]
+            else:
+                severity = Severity.CRITICAL.value if (ratio > 20.0 or std_val > 1e4) else Severity.WARNING.value
+                obs = f"Module '{mod_name}' has activation std {ratio:.1f}× larger than the previous layer (std: {std_val:.2f}, {ratio_med:.1f}× median)."
+                hypotheses = [
+                    "Unscaled residual connection addition",
+                    "Missing LayerNorm / BatchNorm / GroupNorm layer",
+                    "Large weight initialization scaling",
+                    "Unbounded activation function without clipping",
+                ]
+                suggested_actions = [
+                    f"Check normalization before or after '{mod_name}'",
+                    "Verify residual branch scale factor (e.g. 1/sqrt(2) or learnable gamma)",
+                ]
+
+            event_with_frozen = dict(event)
+            event_with_frozen["is_frozen"] = is_frozen
+
             findings.append(
                 DiagnosticFinding(
                     category=FindingCategory.FORWARD.value,
                     severity=severity,
                     module=mod_name,
-                    observation=f"Module '{mod_name}' has activation std {ratio:.1f}× larger than the previous layer (std: {std_val:.2f}, {ratio_med:.1f}× median).",
+                    observation=obs,
                     interpretation="This pattern is consistent with possible forward-signal amplification or missing normalization.",
-                    evidence=event,
-                    hypotheses=[
-                        "Unscaled residual connection addition",
-                        "Missing LayerNorm / BatchNorm / GroupNorm layer",
-                        "Large weight initialization scaling",
-                        "Unbounded activation function without clipping",
-                    ],
+                    evidence=event_with_frozen,
+                    hypotheses=hypotheses,
                     confidence="medium" if severity == Severity.WARNING.value else "high",
-                    suggested_actions=[
-                        f"Check normalization before or after '{mod_name}'",
-                        "Verify residual branch scale factor (e.g. 1/sqrt(2) or learnable gamma)",
-                    ],
+                    suggested_actions=suggested_actions,
                 )
             )
 

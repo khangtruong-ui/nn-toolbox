@@ -70,9 +70,18 @@ class DiagnosticReport:
         }
 
         for finding in self.findings:
+            if not finding.is_actionable():
+                continue
+
             target_key = finding.module or finding.category
             if not target_key:
                 target_key = "global"
+
+            is_frozen = bool(
+                finding.evidence.get("is_frozen", False)
+                if isinstance(finding.evidence, dict)
+                else False
+            ) or "[FROZEN]" in finding.observation
 
             if target_key not in target_scores:
                 target_scores[target_key] = {
@@ -82,6 +91,7 @@ class DiagnosticReport:
                     "score": 0,
                     "findings_count": 0,
                     "max_severity": finding.severity,
+                    "is_frozen": is_frozen,
                     "hypotheses": set(),
                     "suggested_actions": set(),
                 }
@@ -89,6 +99,8 @@ class DiagnosticReport:
             weight = severity_weights.get(finding.severity, 1)
             target_scores[target_key]["score"] += weight
             target_scores[target_key]["findings_count"] += 1
+            if is_frozen:
+                target_scores[target_key]["is_frozen"] = True
             if weight > severity_weights.get(target_scores[target_key]["max_severity"], 0):
                 target_scores[target_key]["max_severity"] = finding.severity
 
@@ -99,7 +111,11 @@ class DiagnosticReport:
 
         sorted_targets = sorted(
             target_scores.values(),
-            key=lambda x: (x["score"], x["findings_count"]),
+            key=lambda x: (
+                0 if x.get("is_frozen", False) else 1,
+                x["score"],
+                x["findings_count"],
+            ),
             reverse=True,
         )
 
@@ -113,6 +129,7 @@ class DiagnosticReport:
                 "score": item["score"],
                 "findings_count": item["findings_count"],
                 "max_severity": item["max_severity"],
+                "is_frozen": item.get("is_frozen", False),
                 "hypotheses": sorted(list(item["hypotheses"])),
                 "suggested_actions": sorted(list(item["suggested_actions"])),
             })
