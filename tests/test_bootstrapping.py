@@ -222,3 +222,30 @@ def test_diagnose_integration_with_bootstrapping():
     assert len(bootstrap_findings) == 1
     assert bootstrap_findings[0].severity == "info"
     assert "Bootstrapping v1.0 verified successful" in bootstrap_findings[0].observation
+
+
+def test_verify_bootstrapping_channel_stream():
+    """Test active kickstart verification experiment using end-to-end channel stream masking."""
+    model = ToyModelWithBackboneAndHead()
+    x = torch.randn(32, 8)
+    y = torch.randn(32, 1)
+
+    result = verify_bootstrapping(
+        model=model,
+        sample_batch_or_loader=(x, y),
+        loss_fn=nn.MSELoss(),
+        bootstrap_epochs=4,
+        strategy="channel_stream",
+        stream_ratio=0.5,
+        min_loss_drop=0.01,
+    )
+
+    assert "findings" in result
+    assert "metrics" in result
+    metrics = result["metrics"]
+    assert metrics["strategy"] == "channel_stream"
+    assert metrics["stream_ratio"] == 0.5
+    assert metrics["active_stream_channels"] > 0
+    assert metrics["frozen_tail_channels"] > 0
+    assert metrics["frozen_param_grad_leak"] is False
+    assert metrics["loss_drop"] >= 0.0

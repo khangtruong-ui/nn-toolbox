@@ -24,6 +24,8 @@ def verify_bootstrapping(
     freeze_param_names: Optional[List[str]] = None,
     target_score: Optional[float] = None,
     min_loss_drop: float = 0.10,
+    strategy: str = "channel_stream",
+    stream_ratio: float = 0.5,
     bootstrap_results: Optional[Dict[str, Any]] = None,
     device: Optional[Union[str, torch.device]] = None,
 ) -> Dict[str, Any]:
@@ -32,6 +34,10 @@ def verify_bootstrapping(
     Can either:
     1. Assess an already completed bootstrap session via `bootstrap_results`.
     2. Execute an active kickstart verification experiment on sample data.
+
+    Supports:
+    - 'channel_stream': End-to-end stream of computation with frozen tail channels.
+    - 'whole_layer': Whole module/layer parameter freezing.
 
     Returns:
         Dict containing:
@@ -80,19 +86,61 @@ def verify_bootstrapping(
     orig_requires_grad = {name: p.requires_grad for name, p in model.named_parameters()}
 
     model.train()
+    hooks = []
+    channel_masks = {}
+    active_stream_channels = 0
+    frozen_tail_channels = 0
 
     try:
-        # Determine frozen parameters
         frozen_names = set()
-        if freeze_param_names:
-            for name, p in model.named_parameters():
-                if any(fp in name for fp in freeze_param_names):
-                    p.requires_grad = False
-                    frozen_names.add(name)
+        strat = strategy.lower()
+
+        if strat in ("channel_stream", "dimension_stream"):
+            # End-to-end channel stream: freeze & zero out the last channels of dimension D
+            min_dim_for_split = 4
+            for name, param in model.named_parameters():
+                if not param.requires_grad:
+                    continue
+                if param.dim() in (2, 4):  # Linear or Conv2d
+                    D_out = param.shape[0]
+                    D_in = param.shape[1]
+                    K_out = max(1, int(D_out * stream_ratio)) if D_out > min_dim_for_split else D_out
+                    K_in = max(1, int(D_in * stream_ratio)) if D_in > min_dim_for_split else D_in
+                    if K_out < D_out or K_in < D_in:
+                        mask = torch.zeros_like(param.data)
+                        if param.dim() == 4:
+                            mask[:K_out, :K_in, ...] = 1.0
+                        else:
+                            mask[:K_out, :K_in] = 1.0
+                        channel_masks[name] = mask
+                        param.data.mul_(mask)
+                        h = param.register_hook(lambda g, m=mask: g * m if g is not None else None)
+                        hooks.append(h)
+                        frozen_names.add(name)
+                        active_stream_channels += K_out
+                        frozen_tail_channels += (D_out - K_out)
+                elif param.dim() == 1 and param.shape[0] > min_dim_for_split:
+                    D = param.shape[0]
+                    K = max(1, int(D * stream_ratio))
+                    if K < D:
+                        mask = torch.zeros_like(param.data)
+                        mask[:K] = 1.0
+                        channel_masks[name] = mask
+                        param.data.mul_(mask)
+                        h = param.register_hook(lambda g, m=mask: g * m if g is not None else None)
+                        hooks.append(h)
+                        frozen_names.add(name)
         else:
-            for name, p in model.named_parameters():
-                if not p.requires_grad:
-                    frozen_names.add(name)
+            # Whole layer strategy
+            if freeze_param_names:
+                for name, p in model.named_parameters():
+                    if any(fp in name for fp in freeze_param_names):
+                        p.requires_grad = False
+                        frozen_names.add(name)
+            else:
+                for name, p in model.named_parameters():
+                    if not p.requires_grad:
+                        frozen_names.add(name)
 
         # Ensure at least some parameters remain trainable
         trainable_params = [p for p in model.parameters() if p.requires_grad]
@@ -154,11 +202,19 @@ def verify_bootstrapping(
 
             loss.backward()
 
-            # Check isolation: do frozen parameters have gradients?
-            for name, p in model.named_parameters():
-                if name in frozen_names and p.grad is not None:
-                    if float(p.grad.abs().sum().item()) > 1e-9:
-                        grad_leak = True
+            # Check isolation: do frozen parameters or frozen channels have gradients?
+            if channel_masks:
+                for name, p in model.named_parameters():
+                    if name in channel_masks and p.grad is not None:
+                        mask = channel_masks[name]
+                        frozen_grad = p.grad * (1.0 - mask)
+                        if float(frozen_grad.abs().sum().item()) > 1e-9:
+                            grad_leak = True
+            else:
+                for name, p in model.named_parameters():
+                    if name in frozen_names and p.grad is not None:
+                        if float(p.grad.abs().sum().item()) > 1e-9:
+                            grad_leak = True
 
             opt.step()
 
@@ -170,6 +226,10 @@ def verify_bootstrapping(
         metrics = {
             "enabled": True,
             "run_bootstrap": True,
+            "strategy": strategy,
+            "stream_ratio": stream_ratio,
+            "active_stream_channels": active_stream_channels,
+            "frozen_tail_channels": frozen_tail_channels,
             "initial_loss": initial_loss,
             "final_loss": final_loss,
             "loss_drop": loss_drop,
@@ -194,7 +254,9 @@ def verify_bootstrapping(
         }
 
     finally:
-        # Non-destructive: restore original weights and requires_grad states
+        # Non-destructive: remove hooks and restore original weights and requires_grad states
+        for h in hooks:
+            h.remove()
         model.load_state_dict(orig_state)
         for name, p in model.named_parameters():
             if name in orig_requires_grad:

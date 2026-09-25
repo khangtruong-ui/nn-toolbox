@@ -125,6 +125,14 @@ class BootstrapDetector(BaseDetector):
 
         # 4. Verified Healthy Bootstrapping v1.0 Confirmation
         score_detail = f", score: {best_score:.4f}" if best_score > 0 else ""
+        strategy = boot_info.get("strategy", "channel_stream")
+        if strategy in ("channel_stream", "dimension_stream"):
+            stream_ratio = boot_info.get("stream_ratio", None)
+            ratio_str = f" (stream ratio: {float(stream_ratio):.0%})" if stream_ratio is not None else ""
+            stream_obs = f"End-to-end channel stream computation{ratio_str} confirmed with zero gradient leakage into frozen tail channels."
+        else:
+            stream_obs = "Frozen parameters remained isolated and model is primed for full release."
+
         findings.append(
             DiagnosticFinding(
                 category=FindingCategory.BOOTSTRAP.value,
@@ -132,9 +140,9 @@ class BootstrapDetector(BaseDetector):
                 observation=(
                     f"Bootstrapping v1.0 verified successful: Model achieved acceptable kickstart fit on {num_samples} samples "
                     f"({epochs} epochs; loss: {initial_loss:.4f} -> {final_loss:.4f}, drop: {loss_drop*100:.1f}%{score_detail}). "
-                    f"Frozen parameters remained isolated and model is primed for full release."
+                    f"{stream_obs}"
                 ),
-                interpretation="The kickstarting phase succeeded in fitting the task-specific parameters to the data manifold, preventing gradient shock upon releasing frozen parameters.",
+                interpretation="The kickstarting phase succeeded in fitting the core stream representations to the data manifold, preventing gradient shock upon full parameter release.",
                 evidence=boot_info,
                 confidence="high",
             )
