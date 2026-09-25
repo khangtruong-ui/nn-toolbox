@@ -205,5 +205,5 @@ Monitors and diagnoses Bootstrapping v1.0 kickstarting metrics.
 * **Checks**:
   * Frozen parameter gradient isolation: flags gradient leakage into frozen layers with `Severity.CRITICAL`.
   * Numerical divergence: flags loss explosion or NaNs with `Severity.CRITICAL`.
-  * Fitting progress: flags insufficient loss reduction ($< \text{min\_loss\_drop}$) or failure to reach acceptable score with `Severity.WARNING`.
+  * Fitting progress: flags insufficient loss reduction ($<$ `min_loss_drop`) or failure to reach acceptable score with `Severity.WARNING`.
   * Successful kickstart confirmation: emits an `Severity.INFO` confirmation verifying that the model achieved acceptable kickstart fit and is primed for full release.

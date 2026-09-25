@@ -236,7 +236,7 @@ $$\Delta_{rel} = \frac{\max_{k > 1} \|f_k(x) - f_1(x)\|_2}{\|f_1(x)\|_2 + \epsil
 When training complex deep models (such as `DiffusionDiff`, `DiffusionDiffV2`, or deep UNets), initializing randomly initialized layers can destabilize training. Rather than coarsely freezing entire layers (which prevents gradients from flowing end-to-end), **Bootstrapping v1.0** establishes an **end-to-end channel stream**: for each layer of dimension $D$ (linear matmul or conv filters), it freezes and zeroes out the last channels ($D - K$), allowing a calibrated core stream of computation ($K$ channels) to reach end-to-end from input to output.
 
 **Bootstrapping v1.0** kickstarts model training by:
-1. **End-to-End Channel Stream**: For linear layers and convolutions of dimension $D$, freezes and zeroes out the last channels ($[K, D)$) while keeping the first $K = \lfloor D \times \text{stream\_ratio} \rfloor$ channels active, letting computation reach cleanly end-to-end.
+1. **End-to-End Channel Stream**: For linear layers and convolutions of dimension $D$, freezes and zeroes out the last channels ($[K, D)$) while keeping the first $K = \max(1, \lfloor D \times r_{\mathrm{stream}} \rfloor)$ channels active (configured via `stream_ratio`), letting computation reach cleanly end-to-end.
 2. **Calibrated Initialization**: Applies variance scaling (Kaiming normal/Xavier) to active stream layers with strictly zeroed biases.
 3. **Subset Kickstart Training**: Trains the active core stream on a small sample subset (e.g. 512 or 2048 examples) for multiple epochs until performing an acceptable fit.
 4. **Early Parameter Release**: Restores all tail channels and releases the model for full-capacity normal training.
@@ -245,9 +245,9 @@ When training complex deep models (such as `DiffusionDiff`, `DiffusionDiffV2`, o
 * **Isolation Verification**: Verifies that parameters and tail channels designated as frozen during the kickstart phase receive zero gradients:
   $$\nabla_{\theta_{\mathrm{frozen}}} \mathcal{L} = 0$$
   Flags gradient leakage with critical severity.
-* **Loss Trajectory & Fit Verification**: Tracks initial loss $\mathcal{L}\_0$ vs. final loss $\mathcal{L}\_{\mathrm{final}}$ on the bootstrap subset:
+* **Loss Trajectory & Fit Verification**: Tracks initial loss $\mathcal{L}_0$ vs. final loss $\mathcal{L}_{\mathrm{final}}$ on the bootstrap subset:
   $$\Delta \mathcal{L} = \frac{\mathcal{L}_0 - \mathcal{L}_{\mathrm{final}}}{\mathcal{L}_0} \ge 15\%$$
-  Confirms that the model achieved acceptable fit (relative loss reduction $\ge 15\%$ or score $\ge \text{target\_score}$).
+  Confirms that the model achieved acceptable fit (relative loss reduction $\ge 15\%$ or score $\ge$ `target_score`).
 * **Divergence Detection**: Catches activation or loss explosion during the kickstart phase before releasing full model parameters.
 * **Release Readiness**: Emits an `[INFO]` confirmation finding when the kickstart phase has stabilized the core stream and the model is primed for full parameter release.
 
