@@ -177,3 +177,33 @@ perturbation_test(
 ) -> Dict[str, Any]
 ```
 Measures directional Lipschitz gain $\|f(x+\epsilon) - f(x)\| / \|\epsilon\|$ to identify hyper-sensitive or locally flat mappings.
+
+### `nn_toolbox.experiments.verify_bootstrapping`
+```python
+verify_bootstrapping(
+    model: torch.nn.Module,
+    sample_batch_or_loader: Optional[Any] = None,
+    loss_fn: Optional[Callable[..., torch.Tensor]] = None,
+    optimizer: Optional[torch.optim.Optimizer] = None,
+    bootstrap_epochs: int = 3,
+    freeze_param_names: Optional[List[str]] = None,
+    target_score: Optional[float] = None,
+    min_loss_drop: float = 0.10,
+    bootstrap_results: Optional[Dict[str, Any]] = None,
+    device: Optional[Union[str, torch.device]] = None,
+) -> Dict[str, Any]
+```
+Verifies whether Bootstrapping v1.0 kickstarting works effectively. Evaluates parameter freeze isolation, kickstart convergence, loss reduction on sample subsets, and release readiness.
+
+---
+
+## 5. Anomaly Detectors
+
+### `nn_toolbox.detectors.BootstrapDetector`
+Monitors and diagnoses Bootstrapping v1.0 kickstarting metrics.
+* **Finding Category**: `FindingCategory.BOOTSTRAP` (`"bootstrap"`).
+* **Checks**:
+  * Frozen parameter gradient isolation: flags gradient leakage into frozen layers with `Severity.CRITICAL`.
+  * Numerical divergence: flags loss explosion or NaNs with `Severity.CRITICAL`.
+  * Fitting progress: flags insufficient loss reduction ($< \text{min\_loss\_drop}$) or failure to reach acceptable score with `Severity.WARNING`.
+  * Successful kickstart confirmation: emits an `Severity.INFO` confirmation verifying that the model achieved acceptable kickstart fit and is primed for full release.

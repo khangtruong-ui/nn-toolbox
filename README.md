@@ -231,6 +231,48 @@ $$\Delta_{rel} = \frac{\max_{k > 1} \|f_k(x) - f_1(x)\|_2}{\|f_1(x)\|_2 + \epsil
 
 ---
 
+### 10. Bootstrapping v1.0 Kickstart Diagnostics & Verification
+
+When training complex deep models (such as `DiffusionDiff`, `DiffusionDiffV2`, or deep UNets), initializing randomly initialized task heads or decoders alongside frozen or pretrained backbones can easily destabilize training if gradients are uncalibrated or if frozen backbones leak gradients.
+
+**Bootstrapping v1.0** kickstarts model training by:
+1. Freezing specific parts of the model (e.g., encoder/backbone).
+2. Initializing unfrozen layers (e.g., Kaiming normal/Xavier, zero biases).
+3. Training the unfrozen components on a small sample subset (e.g., 512 or 2048 examples) for multiple epochs until achieving an acceptable fit and score.
+4. Early releasing the frozen parameters to proceed with normal training.
+
+`nn-toolbox` monitors and notices whether Bootstrapping v1.0 works:
+* **Isolation Verification**: Verifies that parameters designated as frozen during the kickstart phase receive zero gradients ($\nabla_{\theta_{\text{frozen}}} \mathcal{L} = 0$). Flags gradient leakage with critical severity.
+* **Loss Trajectory & Fit Verification**: Tracks initial loss $\mathcal{L}_0$ vs final loss $\mathcal{L}_{\text{final}}$ on the bootstrap subset. Confirms that the model achieved acceptable fit (relative loss reduction $\ge 15\%$ or score $\ge \text{target\_score}$).
+* **Divergence Detection**: Catches activation or loss explosion during the kickstart phase before releasing full model parameters.
+* **Release Readiness**: Emits an `[INFO]` confirmation finding when the kickstart phase has stabilized the heads and the model is primed for full parameter release.
+
+```python
+from nn_toolbox.experiments.bootstrapping import verify_bootstrapping
+from nn_toolbox.detectors.bootstrap import BootstrapDetector
+
+# 1. Run active bootstrap verification experiment on sample data
+result = verify_bootstrapping(
+    model=model,
+    sample_batch_or_loader=(sample_images, sample_targets),
+    loss_fn=loss_fn,
+    bootstrap_epochs=5,
+    freeze_param_names=["encoder", "vae"],
+    min_loss_drop=0.15,
+    target_score=0.50,
+)
+print(f"Bootstrapping v1.0 works: {result['acceptable_fit']}")
+
+# 2. Or diagnose a completed bootstrap training session
+from nn_toolbox import diagnose
+report = diagnose(
+    model=model,
+    bootstrapping=trainer.bootstrap_results,
+)
+```
+
+---
+
 ## Package Architecture
 
 ```text
@@ -251,6 +293,7 @@ nn-toolbox/
 │   │   └── storage.py             # RollingMetricsStorage (windowed temporal history)
 │   │
 │   ├── experiments/               # Targeted active diagnostic experiments
+│   │   ├── bootstrapping.py       # Bootstrapping v1.0 kickstart verification experiment
 │   │   ├── overfit.py             # Automated tiny-dataset memorization test
 │   │   ├── lr_sweep.py            # Logarithmic learning rate sensitivity sweep
 │   │   ├── initialization.py      # Synthetic normal forward/backward probe
@@ -263,6 +306,7 @@ nn-toolbox/
 │   │
 │   ├── detectors/                 # Rule-based failure hypothesis detectors
 │   │   ├── base.py                # BaseDetector interface
+│   │   ├── bootstrap.py           # Bootstrapping v1.0 fit, isolation & divergence detector
 │   │   ├── connectivity.py        # Disconnected subgraphs & unhooked parameters
 │   │   ├── gradient_balance.py    # Inter-branch gradient scale balance & starvation
 │   │   ├── layout.py              # Non-contiguous tensor memory layout & slicing
@@ -437,6 +481,7 @@ print(f"Train/eval relative difference: {te_results['relative_difference']:.2%}"
 | `CollapseDetector` | Architecture | Representation dimensional collapse via SVD effective rank ratio ($R_{eff} < 0.1$). |
 | `InstabilityDetector` | Optimization | Severe loss oscillation, sign-flipping gradient cosine similarities ($\cos < -0.7$). |
 | `DataDetector` | Data | Constant batch inputs (variance $<10^{-12}$), NaNs, Infs, extreme input ranges. |
+| `BootstrapDetector` | Bootstrap | Bootstrapping v1.0 kickstart verification: isolation integrity, sample fitting, loss reduction, and transition readiness. |
 
 ---
 

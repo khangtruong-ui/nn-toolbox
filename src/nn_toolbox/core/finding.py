@@ -26,6 +26,7 @@ class FindingCategory(str, Enum):
     STABILITY = "stability"
     ARCHITECTURE = "architecture"
     INITIALIZATION = "initialization"
+    BOOTSTRAP = "bootstrap"
     GENERAL = "general"
 
 

@@ -17,6 +17,7 @@ from nn_toolbox.analysis.similarity import analyze_representation_collapse
 from nn_toolbox.core.finding import DiagnosticFinding, FindingCategory, Severity
 from nn_toolbox.core.report_data import DiagnosticReport
 from nn_toolbox.detectors import (
+    BootstrapDetector,
     CollapseDetector,
     DataDetector,
     ExplodingDetector,
@@ -50,6 +51,7 @@ def diagnose(
     num_batches: int = 2,
     sample_input: Optional[Any] = None,
     sample_target: Optional[Any] = None,
+    bootstrapping: Optional[Dict[str, Any]] = None,
     verbose: bool = True,
 ) -> DiagnosticReport:
     """Run an automated diagnostic session on a PyTorch model and training pipeline.
@@ -65,6 +67,7 @@ def diagnose(
         num_batches: Number of sample batches to evaluate.
         sample_input: Optional explicit input tensor (overrides dataloader).
         sample_target: Optional explicit target tensor.
+        bootstrapping: Optional Bootstrapping v1.0 run metrics or configuration.
         verbose: If True, prints terminal report summary.
 
     Returns:
@@ -90,6 +93,7 @@ def diagnose(
             num_batches=num_batches,
             sample_input=sample_input,
             sample_target=sample_target,
+            bootstrapping=bootstrapping,
             verbose=verbose,
             report=report,
         )
@@ -112,6 +116,7 @@ def _diagnose_core(
     num_batches: int,
     sample_input: Optional[Any],
     sample_target: Optional[Any],
+    bootstrapping: Optional[Dict[str, Any]],
     verbose: bool,
     report: DiagnosticReport,
 ) -> DiagnosticReport:
@@ -162,6 +167,9 @@ def _diagnose_core(
 
     # Context dictionary for detectors
     context: Dict[str, Any] = {}
+    if bootstrapping is not None:
+        context["bootstrapping"] = bootstrapping
+        report.metrics["bootstrapping"] = bootstrapping
 
     # 3. Data Sanity Inspection
     if batch_input is not None and torch.is_tensor(batch_input):
@@ -318,6 +326,7 @@ def _diagnose_core(
         GraphConnectivityDetector(),
         GradientBalanceDetector(),
         TensorLayoutDetector(),
+        BootstrapDetector(),
     ]
 
     for det in detectors:

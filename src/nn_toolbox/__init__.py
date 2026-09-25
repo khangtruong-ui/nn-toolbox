@@ -4,6 +4,7 @@ nn-toolbox: Systematic diagnostic and investigation laboratory for neural networ
 
 from nn_toolbox.core.finding import DiagnosticFinding, FindingCategory, Severity
 from nn_toolbox.core.report_data import DiagnosticReport
+from nn_toolbox.detectors.bootstrap import BootstrapDetector
 from nn_toolbox.diagnose import diagnose
 from nn_toolbox.experiments import (
     ablation_test,
@@ -15,6 +16,7 @@ from nn_toolbox.experiments import (
     overfit_test,
     perturbation_test,
     train_eval_test,
+    verify_bootstrapping,
 )
 from nn_toolbox.instrumentation import (
     ActivationMonitor,
@@ -31,6 +33,7 @@ __all__ = [
     "DiagnosticFinding",
     "FindingCategory",
     "Severity",
+    "BootstrapDetector",
     "HookManager",
     "ActivationMonitor",
     "GradientMonitor",
@@ -44,5 +47,6 @@ __all__ = [
     "perturbation_test",
     "ablation_test",
     "label_shuffle_test",
+    "verify_bootstrapping",
     "__version__",
 ]
