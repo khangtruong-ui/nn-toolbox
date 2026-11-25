@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 
 from nn_toolbox.core.finding import DiagnosticFinding, FindingCategory, Severity
+from nn_toolbox.core.tensor_utils import extract_primary_tensor
 
 
 def eval_determinism_test(
@@ -57,13 +58,9 @@ def eval_determinism_test(
     try:
         with torch.no_grad():
             for pass_idx in range(num_passes):
-                out = model(x)
-                if isinstance(out, (tuple, list)):
-                    out_t = out[0]
-                elif isinstance(out, dict):
-                    out_t = next(iter(out.values()))
-                else:
-                    out_t = out
+                out_t = extract_primary_tensor(model(x))
+                if out_t is None:
+                    raise TypeError("Model output did not contain a tensor for determinism check.")
                 outputs.append(out_t.detach().float().cpu())
     finally:
         if was_training:

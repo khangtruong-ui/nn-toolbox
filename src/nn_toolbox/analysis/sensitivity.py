@@ -9,6 +9,8 @@ import math
 from typing import Any, Callable, Dict, List, Optional, Union
 import torch
 
+from nn_toolbox.core.tensor_utils import extract_primary_tensor
+
 
 def compute_empirical_sensitivity(
     model_or_fn: Callable[[torch.Tensor], Any],
@@ -37,9 +39,9 @@ def compute_empirical_sensitivity(
                 x_norm = 1.0
 
             # Base output
-            y0 = model_or_fn(x)
-            if isinstance(y0, (tuple, list)):
-                y0 = y0[0]
+            y0 = extract_primary_tensor(model_or_fn(x))
+            if y0 is None:
+                raise TypeError("Model output did not contain a tensor for sensitivity analysis.")
 
             y0_norm = float(torch.linalg.norm(y0.float()).item())
             if y0_norm == 0.0:
@@ -60,9 +62,9 @@ def compute_empirical_sensitivity(
                     x_pert = x + delta
                     actual_delta_norm = float(torch.linalg.norm(delta.float()).item())
 
-                    y_pert = model_or_fn(x_pert)
-                    if isinstance(y_pert, (tuple, list)):
-                        y_pert = y_pert[0]
+                    y_pert = extract_primary_tensor(model_or_fn(x_pert))
+                    if y_pert is None:
+                        raise TypeError("Perturbed model output did not contain a tensor.")
 
                     diff = (y_pert - y0).float()
                     diff_norm = float(torch.linalg.norm(diff).item())

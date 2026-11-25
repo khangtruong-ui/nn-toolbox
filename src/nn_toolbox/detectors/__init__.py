@@ -12,6 +12,7 @@ from nn_toolbox.detectors.layout import TensorLayoutDetector
 from nn_toolbox.detectors.optimization import OptimizationDetector
 from nn_toolbox.detectors.saturation import SaturationDetector
 from nn_toolbox.detectors.vanishing import VanishingDetector
+from nn_toolbox.detectors.weight_health import inspect_pretrained_weight_health
 
 __all__ = [
     "BaseDetector",
@@ -26,4 +27,5 @@ __all__ = [
     "GraphConnectivityDetector",
     "GradientBalanceDetector",
     "TensorLayoutDetector",
+    "inspect_pretrained_weight_health",
 ]

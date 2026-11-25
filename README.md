@@ -605,6 +605,13 @@ For in-depth guides and API documentation:
 * [Learnability Diagnostics Guide](docs/learnability_diagnostics_guide.md): In-depth tutorial on diagnosing unlearnable models.
 * [API Reference](docs/api_reference.md): Detailed class, method, and function signatures.
 
+### Cross-Domain & Pretrained Weight Discrepancy Diagnostics
+
+`nn-toolbox` also includes targeted tools for auditing pretrained weights and cross-domain representation shifts:
+* `inspect_pretrained_weight_health(model)`: Scans BatchNorm running buffers for dead/subnormal channels (`< 1e-30`), near-zero collapsed layers, rank-1 collinear multi-channel output heads, spiked projection matrices, and negative/bias-heavy LayerNorm/GroupNorm layers.
+* `batchnorm_domain_shift_test(model, ref_inputs, ood_inputs)`: Quantifies per-layer standardized mean z-shift and `|log(var_batch / running_var)|` between reference and out-of-distribution batches while skipping subnormal/dead channels.
+* `layer_representation_discrepancy_test(model, ref_inputs, ood_inputs, ref_masks=..., ood_masks=...)`: Measures layer-by-layer strict split-half CV centroid AUROC, ground-truth vs. 2-means separation ratio (`gt_to_km_ratio`), effective rank ratio, and feature cone concentration to pinpoint OOD bottleneck layers.
+
 ---
 
 ## License
