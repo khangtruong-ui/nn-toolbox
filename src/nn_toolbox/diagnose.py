@@ -16,6 +16,7 @@ import torch.nn as nn
 from nn_toolbox.analysis.similarity import analyze_representation_collapse
 from nn_toolbox.core.finding import DiagnosticFinding, FindingCategory, Severity
 from nn_toolbox.core.report_data import DiagnosticReport
+from nn_toolbox.core.tensor_utils import extract_output_tensors, extract_primary_tensor
 from nn_toolbox.detectors import (
     BootstrapDetector,
     CollapseDetector,
@@ -190,6 +191,7 @@ def _diagnose_core(
             context["data_sanity"] = {
                 "inputs_finite": in_finite,
                 "input_is_constant": in_var < 1e-12,
+                "input_var": in_var,
                 "input_min": in_min,
                 "input_max": in_max,
                 "input_shape": list(batch_input.shape),
@@ -285,21 +287,19 @@ def _diagnose_core(
     # 6. Representation Collapse & Tensor Layout Check
     non_contiguous = []
     if latest_output is not None:
-        out_tensors = [latest_output] if torch.is_tensor(latest_output) else (
-            list(latest_output) if isinstance(latest_output, (tuple, list)) else []
-        )
-        for idx, ot in enumerate(out_tensors):
-            if torch.is_tensor(ot) and not ot.is_contiguous():
+        out_tensors = extract_output_tensors(latest_output)
+        for out_name, ot in out_tensors:
+            if not ot.is_contiguous():
                 non_contiguous.append({
-                    "name": f"output_{idx}" if len(out_tensors) > 1 else "output",
+                    "name": out_name,
                     "shape": list(ot.shape),
                     "stride": list(ot.stride()),
                 })
         context["tensor_layout"] = {"non_contiguous": non_contiguous}
         report.metrics["tensor_layout"] = context["tensor_layout"]
 
-        out_tensor = latest_output[0] if isinstance(latest_output, (tuple, list)) else latest_output
-        if torch.is_tensor(out_tensor) and out_tensor.ndim >= 2:
+        out_tensor = extract_primary_tensor(latest_output)
+        if out_tensor is not None and out_tensor.ndim >= 2:
             rep_analysis = analyze_representation_collapse(out_tensor)
             context["representation_collapse"] = rep_analysis
             report.metrics["representation_collapse"] = rep_analysis
@@ -405,7 +405,7 @@ def _diagnose_core(
     rep = context.get("representation_collapse", {})
     if rep and not rep.get("is_collapsed", False):
         erank = rep.get("effective_rank", 1.0)
-        eratio = rep.get("effective_rank_ratio", 1.0)
+        eratio = rep.get("rank_ratio", rep.get("effective_rank_ratio", 1.0))
         report.add_finding(
             DiagnosticFinding(
                 category=FindingCategory.ARCHITECTURE.value,

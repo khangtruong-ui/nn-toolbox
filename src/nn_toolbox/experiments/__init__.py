@@ -2,6 +2,10 @@
 
 from nn_toolbox.experiments.ablation import ablation_test
 from nn_toolbox.experiments.bootstrapping import verify_bootstrapping
+from nn_toolbox.experiments.domain_discrepancy import (
+    batchnorm_domain_shift_test,
+    layer_representation_discrepancy_test,
+)
 from nn_toolbox.experiments.eval_determinism import eval_determinism_test
 from nn_toolbox.experiments.gradient_check import gradient_check
 from nn_toolbox.experiments.initialization import initialization_diagnostic
@@ -22,4 +26,6 @@ __all__ = [
     "ablation_test",
     "label_shuffle_test",
     "verify_bootstrapping",
+    "batchnorm_domain_shift_test",
+    "layer_representation_discrepancy_test",
 ]

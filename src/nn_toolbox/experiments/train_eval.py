@@ -12,6 +12,14 @@ import torch
 import torch.nn as nn
 
 from nn_toolbox.core.finding import DiagnosticFinding, FindingCategory, Severity
+from nn_toolbox.core.tensor_utils import extract_primary_tensor
+
+
+def _require_primary_tensor(output: Any, phase: str) -> torch.Tensor:
+    tensor = extract_primary_tensor(output)
+    if tensor is None:
+        raise TypeError(f"Could not extract a tensor from {phase} model output of type {type(output).__name__}.")
+    return tensor
 
 
 def train_eval_test(
@@ -45,16 +53,12 @@ def train_eval_test(
         # Run in train mode
         model.train()
         with torch.no_grad():
-            out_train = model(x)
-            if isinstance(out_train, (tuple, list)):
-                out_train = out_train[0]
+            out_train = _require_primary_tensor(model(x), "train()")
 
         # Run in eval mode
         model.eval()
         with torch.no_grad():
-            out_eval = model(x)
-            if isinstance(out_eval, (tuple, list)):
-                out_eval = out_eval[0]
+            out_eval = _require_primary_tensor(model(x), "eval()")
 
         diff = (out_train - out_eval).float()
         l2_diff = float(torch.linalg.norm(diff).item())
@@ -65,9 +69,7 @@ def train_eval_test(
 
         # Also run eval twice to verify deterministic behavior in eval mode
         with torch.no_grad():
-            out_eval_2 = model(x)
-            if isinstance(out_eval_2, (tuple, list)):
-                out_eval_2 = out_eval_2[0]
+            out_eval_2 = _require_primary_tensor(model(x), "eval() repeat")
 
         eval_rep_diff = float(torch.linalg.norm((out_eval - out_eval_2).float()).item())
         is_eval_deterministic = eval_rep_diff < 1e-6

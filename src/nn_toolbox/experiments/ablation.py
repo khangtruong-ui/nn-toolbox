@@ -11,6 +11,7 @@ import torch
 import torch.nn as nn
 
 from nn_toolbox.core.finding import DiagnosticFinding, FindingCategory, Severity
+from nn_toolbox.core.tensor_utils import extract_primary_tensor
 
 
 class IdentityBypass(nn.Module):
@@ -34,9 +35,9 @@ def ablation_test(
 
     with torch.no_grad():
         try:
-            base_out = model(sample_input)
-            if isinstance(base_out, (tuple, list)):
-                base_out = base_out[0]
+            base_out = extract_primary_tensor(model(sample_input))
+            if base_out is None:
+                return {"success": False, "error": "Base model output did not contain a tensor."}
             base_loss = float(loss_fn(base_out).item()) if loss_fn else float(base_out.norm().item())
         except Exception as e:
             return {"success": False, "error": f"Base model evaluation failed: {e}"}
@@ -69,9 +70,9 @@ def ablation_test(
         setattr(parent, attr_name, IdentityBypass())
         try:
             with torch.no_grad():
-                abl_out = model(sample_input)
-                if isinstance(abl_out, (tuple, list)):
-                    abl_out = abl_out[0]
+                abl_out = extract_primary_tensor(model(sample_input))
+                if abl_out is None:
+                    raise TypeError("Ablated model output did not contain a tensor.")
                 abl_loss = float(loss_fn(abl_out).item()) if loss_fn else float(abl_out.norm().item())
 
             loss_delta = abl_loss - base_loss
