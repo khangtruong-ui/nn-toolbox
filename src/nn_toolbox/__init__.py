@@ -10,6 +10,7 @@ from nn_toolbox.diagnose import diagnose
 from nn_toolbox.experiments import (
     ablation_test,
     batchnorm_domain_shift_test,
+    clustering_polarity_diagnostic,
     eval_determinism_test,
     gradient_check,
     initialization_diagnostic,
@@ -53,6 +54,7 @@ __all__ = [
     "label_shuffle_test",
     "verify_bootstrapping",
     "batchnorm_domain_shift_test",
+    "clustering_polarity_diagnostic",
     "layer_representation_discrepancy_test",
     "__version__",
 ]

@@ -564,3 +564,253 @@ def layer_representation_discrepancy_test(
         "bottleneck_summary": bottleneck_summary,
         "findings": findings,
     }
+
+
+def _compute_binary_iou_1d(pred_bin: torch.Tensor, target_bin: torch.Tensor) -> float:
+    inter = float((pred_bin & target_bin).sum().item())
+    union = float((pred_bin | target_bin).sum().item())
+    if union <= 0.0:
+        return 1.0 if inter == 0.0 else 0.0
+    return inter / union
+
+
+@torch.no_grad()
+def clustering_polarity_diagnostic(
+    model: nn.Module,
+    domain_batches: Dict[str, Tuple[torch.Tensor, torch.Tensor]],
+    feature_extractor: Optional[Any] = None,
+    device: Optional[Union[str, torch.device]] = None,
+    border_weight: float = 0.75,
+    area_gate: float = 0.25,
+    temperature: float = 0.1,
+    polarity_flip_warn_threshold: float = 0.25,
+    hijack_ratio_threshold: float = 0.40,
+) -> Dict[str, Any]:
+    """Quantify 2-means polarity inversion vs. semantic variance hijacking across domains.
+
+    For each domain's ``(images, masks)`` pair, extracts normalized spatial features,
+    runs flip-equivariant spherical 2-means clustering, and compares:
+      - ``minority`` polarity (standard smaller-cluster-is-tampered heuristic),
+      - ``border_aware`` polarity (penalizes border-touching clusters when min area > ``area_gate``),
+      - ``oracle`` polarity (best GT-aligned cluster assignment).
+
+    Args:
+        model: Neural network module to evaluate (switched temporarily to eval mode).
+        domain_batches: Mapping ``domain_name -> (images [B, C, H, W], masks [B, 1, H, W])``.
+        feature_extractor: Optional callable ``(model, images) -> features``. Defaults to
+            ``model.extract_features(images)`` when present, otherwise ``model(images)``.
+        device: Optional target device.
+        border_weight: Weight on perimeter fraction in border-aware polarity scoring.
+        area_gate: Minimum cluster area fraction required before border override activates.
+        temperature: Cosine similarity logit temperature.
+        polarity_flip_warn_threshold: Flip rate threshold triggering a polarity-inversion finding.
+        hijack_ratio_threshold: ``gt_to_km_ratio`` threshold triggering a semantic-hijacking finding.
+
+    Returns:
+        Dictionary with ``per_domain`` metrics and ``DiagnosticFinding`` list.
+    """
+    target_device = _resolve_model_device(model, device)
+    was_training = model.training
+    model.eval()
+    per_domain: Dict[str, Dict[str, float]] = {}
+    findings: List[DiagnosticFinding] = []
+
+    try:
+        for dom_name, (images, masks) in domain_batches.items():
+            imgs = images.to(target_device)
+            msks = masks.to(target_device).float()
+            if msks.ndim == 3:
+                msks = msks.unsqueeze(1)
+
+            if feature_extractor is not None:
+                raw_feats = feature_extractor(model, imgs)
+            elif hasattr(model, "extract_features"):
+                raw_feats = model.extract_features(imgs)
+            else:
+                raw_feats = extract_primary_tensor(model(imgs))
+
+            feat_bchw = _normalize_to_bchw(extract_primary_tensor(raw_feats))
+            if feat_bchw is None:
+                raise ValueError(f"Expected 3D/4D spatial features for domain '{dom_name}', got {tuple(raw_feats.shape)}.")
+
+            b, c, h_f, w_f = feat_bchw.shape
+            n_px = h_f * w_f
+            f_norm = F.normalize(feat_bchw.float(), p=2, dim=1)
+            f_img = f_norm.permute(0, 2, 3, 1).reshape(b, n_px, c)
+            gt_full = (msks[:, 0] >= 0.5)
+            orig_h, orig_w = msks.shape[2], msks.shape[3]
+            gt_grid = (F.interpolate(msks, size=(h_f, w_f), mode="area")[:, 0] >= 0.5)
+
+            bmask = torch.zeros((h_f, w_f), dtype=torch.bool, device=target_device)
+            bmask[0, :] = True
+            bmask[-1, :] = True
+            bmask[:, 0] = True
+            bmask[:, -1] = True
+            b_flat = bmask.view(1, n_px).expand(b, -1)
+            n_border = max(1.0, float(bmask.sum().item()))
+
+            # Flip-equivariant mean + top-k farthest-point initialization
+            c_mean = F.normalize(f_img.mean(dim=1, keepdim=True), p=2, dim=-1)
+            k_far = max(1, n_px // 50)
+            d1 = 1.0 - torch.bmm(f_img, c_mean.transpose(1, 2)).squeeze(-1)
+            far1 = torch.topk(d1, k=k_far, dim=-1).indices
+            c2 = F.normalize(torch.gather(f_img, 1, far1.unsqueeze(-1).expand(-1, -1, c)).mean(dim=1, keepdim=True), p=2, dim=-1)
+            d2 = 1.0 - torch.bmm(f_img, c2.transpose(1, 2)).squeeze(-1)
+            far2 = torch.topk(d2, k=k_far, dim=-1).indices
+            c1 = F.normalize(torch.gather(f_img, 1, far2.unsqueeze(-1).expand(-1, -1, c)).mean(dim=1, keepdim=True), p=2, dim=-1)
+            centroids = torch.cat([c1, c2], dim=1)
+
+            for _ in range(8):
+                sims = torch.bmm(f_img, centroids.transpose(1, 2))
+                assign = torch.argmax(sims, dim=-1)
+                w0 = (assign == 0).unsqueeze(-1).float()
+                w1 = (assign == 1).unsqueeze(-1).float()
+                cnt0 = w0.sum(dim=1, keepdim=True)
+                cnt1 = w1.sum(dim=1, keepdim=True)
+                s0 = torch.bmm(w0.transpose(1, 2), f_img)
+                s1 = torch.bmm(w1.transpose(1, 2), f_img)
+                nc0 = F.normalize(torch.where(cnt0 > 0, s0 / cnt0.clamp(min=1.0), centroids[:, 0:1, :]), p=2, dim=-1)
+                nc1 = F.normalize(torch.where(cnt1 > 0, s1 / cnt1.clamp(min=1.0), centroids[:, 1:2, :]), p=2, dim=-1)
+                centroids = torch.cat([nc0, nc1], dim=1)
+
+            sims = torch.bmm(f_img, centroids.transpose(1, 2))
+            labels = torch.argmax(sims, dim=-1)
+            c1_cnt = labels.sum(dim=-1, keepdim=True).float()
+            c0_cnt = float(n_px) - c1_cnt
+
+            area0 = c0_cnt / float(max(1, n_px))
+            area1 = c1_cnt / float(max(1, n_px))
+            bf1 = ((labels == 1) & b_flat).float().sum(dim=-1, keepdim=True) / n_border
+            bf0 = 1.0 - bf1
+            cond_min = c1_cnt > c0_cnt
+            cond_border = (area1 + border_weight * bf1) > (area0 + border_weight * bf0)
+            if area_gate > 0.0:
+                cond_border = torch.where(torch.minimum(area0, area1) > area_gate, cond_border, cond_min)
+
+            min_ious: List[float] = []
+            brd_ious: List[float] = []
+            orc_ious: List[float] = []
+            min_aucs: List[float] = []
+            brd_aucs: List[float] = []
+            orc_aucs: List[float] = []
+            flips = 0
+            pos_imgs = 0
+            axis_aligns: List[float] = []
+            gt_km_ratios: List[float] = []
+
+            for i in range(b):
+                gt_i_full = gt_full[i]
+                if not gt_i_full.any():
+                    continue
+                pos_imgs += 1
+                gt_i_grid = gt_grid[i].reshape(n_px)
+
+                def _eval_cond(c0_is_tamp: bool) -> Tuple[float, float]:
+                    diff_i = ((sims[i, :, 0] - sims[i, :, 1]) if c0_is_tamp else (sims[i, :, 1] - sims[i, :, 0])) / max(1e-4, float(temperature))
+                    logit_up = F.interpolate(
+                        diff_i.view(1, 1, h_f, w_f), size=(orig_h, orig_w), mode="bilinear", align_corners=False
+                    )[0, 0]
+                    pred_i = logit_up >= 0.0
+                    return (
+                        _compute_binary_iou_1d(pred_i, gt_i_full),
+                        _compute_exact_auroc_1d(logit_up.reshape(-1), gt_i_full.reshape(-1).float()),
+                    )
+
+                iou_0, auc_0 = _eval_cond(True)
+                iou_1, auc_1 = _eval_cond(False)
+                oracle_c0 = iou_0 >= iou_1
+                min_c0 = bool(cond_min[i, 0].item())
+                brd_c0 = bool(cond_border[i, 0].item())
+
+                if min_c0 != oracle_c0:
+                    flips += 1
+
+                min_ious.append(iou_0 if min_c0 else iou_1)
+                min_aucs.append(auc_0 if min_c0 else auc_1)
+                brd_ious.append(iou_0 if brd_c0 else iou_1)
+                brd_aucs.append(auc_0 if brd_c0 else auc_1)
+                orc_ious.append(max(iou_0, iou_1))
+                orc_aucs.append(auc_0 if oracle_c0 else auc_1)
+
+                if gt_i_grid.any() and (~gt_i_grid).any():
+                    mu_p = F.normalize(f_img[i][gt_i_grid].mean(dim=0), p=2, dim=0)
+                    mu_n = F.normalize(f_img[i][~gt_i_grid].mean(dim=0), p=2, dim=0)
+                    gt_sep = float((1.0 - (mu_p * mu_n).sum()).clamp(min=0.0).item())
+                    km_sep = float((1.0 - (centroids[i, 0] * centroids[i, 1]).sum()).clamp(min=0.0).item())
+                    gt_km_ratios.append(gt_sep / max(km_sep, 1e-6))
+                    gt_axis = F.normalize(mu_p - mu_n, p=2, dim=0)
+                    km_axis = F.normalize(centroids[i, 0] - centroids[i, 1], p=2, dim=0)
+                    axis_aligns.append(float((gt_axis * km_axis).sum().abs().item()))
+
+            dom_metrics = {
+                "samples": float(b),
+                "positive_samples": float(pos_imgs),
+                "minority_iou": float(np.nanmean(min_ious)) if min_ious else float("nan"),
+                "border_polarity_iou": float(np.nanmean(brd_ious)) if brd_ious else float("nan"),
+                "oracle_polarity_iou": float(np.nanmean(orc_ious)) if orc_ious else float("nan"),
+                "minority_auroc": float(np.nanmean(min_aucs)) if min_aucs else float("nan"),
+                "border_polarity_auroc": float(np.nanmean(brd_aucs)) if brd_aucs else float("nan"),
+                "oracle_polarity_auroc": float(np.nanmean(orc_aucs)) if orc_aucs else float("nan"),
+                "polarity_flip_rate": float(flips / max(1, pos_imgs)) if pos_imgs > 0 else 0.0,
+                "axis_alignment": float(np.nanmean(axis_aligns)) if axis_aligns else float("nan"),
+                "gt_to_km_ratio": float(np.nanmean(gt_km_ratios)) if gt_km_ratios else float("nan"),
+            }
+            per_domain[dom_name] = dom_metrics
+
+            flip_rate = dom_metrics["polarity_flip_rate"]
+            orc_gap = dom_metrics["oracle_polarity_iou"] - dom_metrics["minority_iou"]
+            if pos_imgs > 0 and flip_rate >= polarity_flip_warn_threshold and not math.isnan(orc_gap) and orc_gap >= 0.05:
+                findings.append(
+                    DiagnosticFinding(
+                        category=FindingCategory.ARCHITECTURE.value,
+                        severity=Severity.WARNING.value,
+                        module=dom_name,
+                        observation=(
+                            f"POLARITY_INVERSION on '{dom_name}': minority-cluster heuristic flipped "
+                            f"{flip_rate * 100:.1f}% of samples (minority IoU={dom_metrics['minority_iou']:.3f} vs "
+                            f"oracle={dom_metrics['oracle_polarity_iou']:.3f}; border-aware={dom_metrics['border_polarity_iou']:.3f})."
+                        ),
+                        interpretation="Tampered regions occupy >=50% area or background wraps image edges, breaking smaller-cluster assumption.",
+                        evidence=dom_metrics,
+                        confidence="high",
+                        suggested_actions=[
+                            "Replace minority-cluster polarity with border-aware or learned antisymmetric cluster polarity.",
+                        ],
+                    )
+                )
+
+            gk = dom_metrics["gt_to_km_ratio"]
+            if not math.isnan(gk) and gk <= hijack_ratio_threshold:
+                findings.append(
+                    DiagnosticFinding(
+                        category=FindingCategory.ARCHITECTURE.value,
+                        severity=Severity.WARNING.value,
+                        module=dom_name,
+                        observation=(
+                            f"SEMANTIC_HIJACKING on '{dom_name}': GT/KM separation ratio is {gk:.3f} "
+                            f"(<= {hijack_ratio_threshold:.2f}; oracle IoU={dom_metrics['oracle_polarity_iou']:.3f})."
+                        ),
+                        interpretation="Non-task background semantics dominate 2-means variance over the target signal.",
+                        evidence=dom_metrics,
+                        confidence="high",
+                        suggested_actions=[
+                            "Fuse intermediate/pre-neck representations or adapt the feature extractor on paired target-domain cues.",
+                        ],
+                    )
+                )
+
+        if not findings:
+            findings.append(
+                DiagnosticFinding(
+                    category=FindingCategory.ARCHITECTURE.value,
+                    severity=Severity.INFO.value,
+                    observation=f"Clustering polarity diagnostic completed across {len(per_domain)} domain(s) with no inversion or hijacking alerts.",
+                    interpretation="2-means cluster axes and polarity align with ground-truth masks.",
+                    confidence="high",
+                )
+            )
+    finally:
+        if was_training:
+            model.train()
+
+    return {"per_domain": per_domain, "findings": findings}
