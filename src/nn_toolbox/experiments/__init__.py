@@ -4,6 +4,7 @@ from nn_toolbox.experiments.ablation import ablation_test
 from nn_toolbox.experiments.bootstrapping import verify_bootstrapping
 from nn_toolbox.experiments.domain_discrepancy import (
     batchnorm_domain_shift_test,
+    clustering_polarity_diagnostic,
     layer_representation_discrepancy_test,
 )
 from nn_toolbox.experiments.eval_determinism import eval_determinism_test
@@ -27,5 +28,6 @@ __all__ = [
     "label_shuffle_test",
     "verify_bootstrapping",
     "batchnorm_domain_shift_test",
+    "clustering_polarity_diagnostic",
     "layer_representation_discrepancy_test",
 ]
